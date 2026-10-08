@@ -50,6 +50,8 @@ If you already know **compose-webview-multiplatform**, you already know how to u
   - **Linux**: WebKit2GTK (`libcompose_webview_linux.so`)
   - **Windows**: WebView2 CompositionController + DirectComposition (`compose_webview_windows.dll`; needs WebView2 Runtime / Edge)
   - **macOS**: WKWebView (`libcompose_webview_macos.dylib`)
+  - **Desktop safety defaults**: device-permission requests (camera, microphone, ...) are denied;
+    `window.open` / `target=_blank` load in the same view.
 
 ---
 
@@ -232,6 +234,32 @@ navigator.evaluateJavaScript("document.title = 'Hello'")
 ```js
 window.kmpJsBridge.callNative("echo", {...}, callback)
 ```
+
+### Attested message channel (desktop: macOS, Windows)
+
+For a host that must know *who* is talking (a wallet answering a page, for example), `kmpJsBridge`
+and `window.ipc` are not enough: they are page globals present in every frame, and carry no origin
+or frame information. An `AttestedMessageChannel` gives every message the sender's origin and
+frame **as the engine reports them**, and a reply bound to the sending document.
+
+```kotlin
+state.webSettings.desktopWebSettings.messageChannel =
+    AttestedMessageChannel("myChannel") { message, reply ->
+        if (message.isMainFrame && message.origin == "https://app.example") reply("ok")
+    }
+```
+
+```js
+window.myChannel.postMessage("hello").then(function (answer) { /* "ok" */ });
+```
+
+`window.myChannel` is installed at document start in the top frame only and cannot be replaced by
+the page. `onMessage` runs on the UI thread; `reply` may be called from any thread, at most once.
+A reply after the page navigated away is dropped. Set the channel before the WebView is created.
+
+* **macOS**: messages from sub-frames reach the channel with `isMainFrame == false`.
+* **Windows**: only the top-level document reaches the channel; messages from sub-frames never do.
+* **Linux**: not supported (ignored).
 
 ### RequestInterceptor
 
