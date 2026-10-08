@@ -119,13 +119,36 @@ void compose_webview_hook_events(ComposeWebViewState *s) {
             }).Get(),
         &s->cursorChangedToken);
 
+    s->webview->add_ContentLoading(
+        Callback<ICoreWebView2ContentLoadingEventHandler>(
+            [raw](ICoreWebView2 *, ICoreWebView2ContentLoadingEventArgs *) -> HRESULT {
+                raw->documentGeneration.fetch_add(1, std::memory_order_acq_rel);
+                return S_OK;
+            }).Get(),
+        &s->contentLoadingToken);
+
     s->webview->add_WebMessageReceived(
         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
             [raw](ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventArgs *args) -> HRESULT {
                 LPWSTR msg = nullptr;
                 if (SUCCEEDED(args->TryGetWebMessageAsString(&msg)) && msg) {
-                    compose_webview_call_on_ipc(raw->handle, compose_webview_wide_to_utf8(msg));
+                    std::wstring message(msg);
                     CoTaskMemFree(msg);
+                    if (raw->channelEnabled) {
+                        LPWSTR src = nullptr;
+                        std::wstring source;
+                        if (SUCCEEDED(args->get_Source(&src)) && src) {
+                            source.assign(src);
+                            CoTaskMemFree(src);
+                        }
+                        compose_webview_call_on_sourced_message(
+                            raw->handle,
+                            raw->documentGeneration.load(std::memory_order_acquire),
+                            source,
+                            message);
+                    } else {
+                        compose_webview_call_on_ipc(raw->handle, compose_webview_wide_to_utf8(message));
+                    }
                 } else {
                     LPWSTR json = nullptr;
                     if (SUCCEEDED(args->get_WebMessageAsJson(&json)) && json) {
@@ -148,6 +171,7 @@ void compose_webview_unhook_events(ComposeWebViewState *s) {
         s->webview->remove_HistoryChanged(s->historyChangedToken);
         s->webview->remove_DocumentTitleChanged(s->documentTitleChangedToken);
         s->webview->remove_WebMessageReceived(s->webMessageToken);
+        s->webview->remove_ContentLoading(s->contentLoadingToken);
     }
     if (s->compController) {
         s->compController->remove_CursorChanged(s->cursorChangedToken);

@@ -770,6 +770,10 @@ internal suspend fun runFullSuite(
                 SuiteCapability.AttestedSubframeDelivery !in caps || fromFrame.isNotEmpty(),
                 "the frame message never arrived, so nothing was attested",
             )
+            assertThat(
+                SuiteCapability.AttestedSubframeDelivery in caps || fromFrame.isEmpty(),
+                "a platform without subframe delivery attested a frame message: $fromFrame",
+            )
             assertThat(fromFrame.none { it.isMainFrame }, "a frame message was attested as main frame: $fromFrame")
             assertThat(fromFrame.all { it.origin == "null" }, "a frame message carried a non-opaque origin: $fromFrame")
         }

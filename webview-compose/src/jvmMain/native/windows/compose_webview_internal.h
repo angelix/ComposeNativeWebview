@@ -63,6 +63,11 @@ struct ComposeWebViewState {
     EventRegistrationToken documentTitleChangedToken{};
     EventRegistrationToken cursorChangedToken{};
     EventRegistrationToken webMessageToken{};
+    EventRegistrationToken contentLoadingToken{};
+
+    /* Counts top-level documents; a reply addressed to an earlier one is dropped. */
+    std::atomic<jlong> documentGeneration{0};
+    bool channelEnabled = false;
 };
 
 struct ComposeWebViewCreateOptions {
@@ -70,6 +75,7 @@ struct ComposeWebViewCreateOptions {
     std::wstring dataDirectory;
     std::wstring initScript;
     std::wstring jsBridgeScript;
+    std::wstring channelShim;
     bool incognito = false;
     bool enableDevtools = false;
     bool javascriptEnabled = true;
@@ -86,6 +92,7 @@ JNIEnv *compose_webview_get_env(void);
 void compose_webview_ensure_bridge_methods(JNIEnv *env);
 void compose_webview_call_on_js_result(jlong handle, const std::string &utf8);
 void compose_webview_call_on_ipc(jlong handle, const std::string &utf8);
+void compose_webview_call_on_sourced_message(jlong handle, jlong generation, const std::wstring &source, const std::wstring &raw);
 bool compose_webview_call_on_navigate(jlong handle, const std::wstring &url);
 void compose_webview_call_on_cookies(jlong handle, const std::string &json);
 void compose_webview_call_on_screenshot(jlong handle, const std::vector<BYTE> *png);

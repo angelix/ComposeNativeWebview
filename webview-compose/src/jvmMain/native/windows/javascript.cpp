@@ -28,4 +28,15 @@ Java_dev_nucleusframework_webview_web_windows_WebView2WindowsBridge_nativeEvalua
             }).Get());
 }
 
+/* Runs a channel reply only if the document that sent the message is still the current one. */
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_webview_web_windows_WebView2WindowsBridge_nativeExecuteIfGeneration(
+    JNIEnv *env, jclass, jlong handle, jlong generation, jstring script) {
+    ComposeWebViewState *s = compose_webview_state_from_handle(handle);
+    if (!s || !s->webview || !script) return;
+    if (s->documentGeneration.load(std::memory_order_acquire) != generation) return;
+    std::wstring w = compose_webview_jstring_to_wide(env, script);
+    s->webview->ExecuteScript(w.c_str(), nullptr);
+}
+
 }  /* extern "C" */

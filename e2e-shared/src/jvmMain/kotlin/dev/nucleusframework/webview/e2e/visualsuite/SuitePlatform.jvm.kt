@@ -101,6 +101,7 @@ actual suspend fun withIsolatedNativeWebView(
                     zoomLevel = 1.0,
                     transparent = false,
                     backgroundColor = Color.White,
+                    messageChannel = messageChannel,
                 )
             }
             else -> error("isolated desktop WebView unsupported on $os")
