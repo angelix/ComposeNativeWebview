@@ -2,6 +2,8 @@ package dev.nucleusframework.webview.web.windows
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.NativeWebView
 import dev.nucleusframework.window.tao.NucleusPlatformView
 import kotlinx.coroutines.CompletableDeferred
@@ -32,6 +34,7 @@ class WindowsWebView2NativeWebView(
     zoomLevel: Double = 1.0,
     transparent: Boolean = false,
     backgroundColor: Color = Color.White,
+    messageChannel: AttestedMessageChannel? = null,
 ) : NativeWebView() {
     private val handle: Long
     private var released = false
@@ -69,10 +72,12 @@ class WindowsWebView2NativeWebView(
             bgG = g,
             bgB = b,
             bgA = a,
+            channelShim = messageChannel?.let { AttestedChannelScripts.windowsShim(it.name) },
         )
         require(handle != 0L) {
             "Failed to create WebView2 (is WebView2 Runtime installed?)"
         }
+        messageChannel?.let { WebView2WindowsBridge.registerChannel(handle, it) }
     }
 
     /**

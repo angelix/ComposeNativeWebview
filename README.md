@@ -50,6 +50,13 @@ If you already know **compose-webview-multiplatform**, you already know how to u
   - **Linux**: WebKit2GTK (`libcompose_webview_linux.so`)
   - **Windows**: WebView2 CompositionController + DirectComposition (`compose_webview_windows.dll`; needs WebView2 Runtime / Edge)
   - **macOS**: WKWebView (`libcompose_webview_macos.dylib`)
+  - **Desktop safety defaults (macOS, Windows)**: camera and microphone requests are denied
+    (macOS 12+ denies media capture; macOS 11 keeps WebKit's default; Windows denies the camera and
+    microphone permission kinds and leaves the others to WebView2's default). A popup
+    (`window.open`, `target=_blank`) loads in the same view only when the main frame asks for an
+    `http(s)` URL; popups from sub-frames and `about:blank`, `javascript:`, `file:`, `data:` or
+    `blob:` popups are ignored. No second window is ever opened. (On Windows a WebView2 Runtime
+    too old to report which frame asked ignores every popup.)
 
 ---
 
@@ -232,6 +239,44 @@ navigator.evaluateJavaScript("document.title = 'Hello'")
 ```js
 window.kmpJsBridge.callNative("echo", {...}, callback)
 ```
+
+### Attested message channel (desktop: macOS, Windows)
+
+For a host that must know *who* is talking (a wallet answering a page, for example), `kmpJsBridge`
+and `window.ipc` are not enough: they are page globals present in every frame, and carry no origin
+or frame information. An `AttestedMessageChannel` gives every message the sender's origin and
+frame **as the engine reports them**, and a reply bound to the sending document.
+
+```kotlin
+state.webSettings.desktopWebSettings.messageChannel =
+    AttestedMessageChannel("myChannel") { message, reply ->
+        if (message.isMainFrame && message.origin == "https://app.example") reply("ok")
+    }
+```
+
+```js
+window.myChannel.postMessage("hello").then(function (answer) { /* "ok" */ });
+```
+
+`window.myChannel` is installed at document start in the top frame only and cannot be replaced by
+the page. `onMessage` runs on the UI thread; `reply` may be called from any thread, at most once.
+A reply is never delivered to a later document than the one that sent the message (on macOS it can
+still settle the old document's promise after a navigation). An exception thrown by `onMessage` is
+logged and the page's promise stays pending. Set the channel before the WebView is created; its
+name must be a JS identifier, not `ipc`, and not the WebView's `jsBridgeName`.
+
+Attestation follows the browser's same-origin model: a same-origin frame (including `about:blank`
+and `srcdoc` frames) can call `parent.myChannel.postMessage`, and its message is attested as the
+main frame's.
+
+* **macOS**: the origin is WebKit's security origin of the sending frame. Messages from sub-frames
+  reach the channel with `isMainFrame == false`. The promise rejects when the body is not a string,
+  a string cannot cross to or from the host, the host is unavailable, or the WebView is released
+  before the reply.
+* **Windows**: the origin is derived from the sending document's URL (a `blob:` top document is
+  `"null"`; a CSP-sandboxed document reports its URL's origin). Only the top-level document reaches
+  the channel; messages from sub-frames never do. The promise never rejects.
+* **Linux**: not supported (ignored).
 
 ### RequestInterceptor
 

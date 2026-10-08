@@ -68,6 +68,7 @@ private fun desktopJsBridgeScript(jsBridgeName: String?): String? {
 actual fun defaultWebViewFactory(param: WebViewFactoryParam): NativeWebView {
     val settings = param.state.webSettings
     val desktop = settings.desktopWebSettings
+    desktop.messageChannel?.requireDistinctFromJsBridge(param.jsBridgeName)
     val bridgeScript = desktopJsBridgeScript(param.jsBridgeName)
     val background =
         if (desktop.transparent) {
@@ -104,6 +105,7 @@ actual fun defaultWebViewFactory(param: WebViewFactoryParam): NativeWebView {
             zoomLevel = settings.zoomLevel,
             transparent = desktop.transparent,
             backgroundColor = background,
+            messageChannel = desktop.messageChannel,
         )
     }
 
@@ -124,6 +126,7 @@ actual fun defaultWebViewFactory(param: WebViewFactoryParam): NativeWebView {
             zoomLevel = settings.zoomLevel,
             transparent = desktop.transparent,
             backgroundColor = background,
+            messageChannel = desktop.messageChannel,
         )
     }
 

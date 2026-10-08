@@ -339,6 +339,12 @@ ComposeWebViewState *compose_webview_create(
         L"})();";
     s->webview->AddScriptToExecuteOnDocumentCreated(ipcShim, nullptr);
 
+    /* Attested message channel shim: installed before any page or init script runs. */
+    if (!opts.channelShim.empty()) {
+        s->channelEnabled = true;
+        s->webview->AddScriptToExecuteOnDocumentCreated(opts.channelShim.c_str(), nullptr);
+    }
+
     /* JS bridge object, built once in Kotlin (honours a custom jsBridgeName).
      * Injected at document start so page scripts can call it without waiting
      * on a Compose Finished race after each navigation. */
@@ -395,7 +401,8 @@ Java_dev_nucleusframework_webview_web_windows_WebView2WindowsBridge_nativeCreate
     jfloat bgR,
     jfloat bgG,
     jfloat bgB,
-    jfloat bgA) {
+    jfloat bgA,
+    jstring channelShim) {
     if (parentHwnd == 0) return 0;
     HWND parent = reinterpret_cast<HWND>(static_cast<uintptr_t>(parentHwnd));
     if (!IsWindow(parent)) return 0;
@@ -407,6 +414,7 @@ Java_dev_nucleusframework_webview_web_windows_WebView2WindowsBridge_nativeCreate
     opts.dataDirectory = compose_webview_jstring_to_wide(env, dataDirectory);
     opts.initScript = compose_webview_jstring_to_wide(env, initScript);
     opts.jsBridgeScript = compose_webview_jstring_to_wide(env, jsBridgeScript);
+    opts.channelShim = compose_webview_jstring_to_wide(env, channelShim);
     opts.incognito = incognito == JNI_TRUE;
     opts.enableDevtools = enableDevtools == JNI_TRUE;
     opts.javascriptEnabled = javascriptEnabled == JNI_TRUE;

@@ -4,6 +4,7 @@ static JavaVM *g_jvm = nullptr;
 static jclass g_bridge_class = nullptr;
 static jmethodID g_on_navigate = nullptr;
 static jmethodID g_on_ipc = nullptr;
+static jmethodID g_on_sourced = nullptr;
 static jmethodID g_on_js_result = nullptr;
 static jmethodID g_on_cookies = nullptr;
 static jmethodID g_on_screenshot = nullptr;
@@ -41,6 +42,8 @@ void compose_webview_ensure_bridge_methods(JNIEnv *env) {
         g_bridge_class, "nativeOnNavigate", "(JLjava/lang/String;)Z");
     g_on_ipc = env->GetStaticMethodID(
         g_bridge_class, "nativeOnIpcMessage", "(JLjava/lang/String;)V");
+    g_on_sourced = env->GetStaticMethodID(
+        g_bridge_class, "nativeOnSourcedMessage", "(JJLjava/lang/String;Ljava/lang/String;)V");
     g_on_js_result = env->GetStaticMethodID(
         g_bridge_class, "nativeOnJsResult", "(JLjava/lang/String;)V");
     g_on_cookies = env->GetStaticMethodID(
@@ -68,6 +71,22 @@ void compose_webview_call_on_ipc(jlong handle, const std::string &utf8) {
     jstring j = env->NewStringUTF(utf8.c_str());
     env->CallStaticVoidMethod(g_bridge_class, g_on_ipc, handle, j);
     env->DeleteLocalRef(j);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+void compose_webview_call_on_sourced_message(jlong handle, jlong generation, const std::wstring &source, const std::wstring &raw) {
+    JNIEnv *env = compose_webview_get_env();
+    if (!env) return;
+    compose_webview_ensure_bridge_methods(env);
+    if (!g_bridge_class || !g_on_sourced) return;
+    /* UTF-16 end to end: NewStringUTF would corrupt non-BMP text (modified UTF-8). */
+    jstring jsource = compose_webview_wide_to_jstring(env, source);
+    jstring jraw = compose_webview_wide_to_jstring(env, raw);
+    if (jsource && jraw) {
+        env->CallStaticVoidMethod(g_bridge_class, g_on_sourced, handle, generation, jsource, jraw);
+    }
+    if (jsource) env->DeleteLocalRef(jsource);
+    if (jraw) env->DeleteLocalRef(jraw);
     if (env->ExceptionCheck()) env->ExceptionClear();
 }
 

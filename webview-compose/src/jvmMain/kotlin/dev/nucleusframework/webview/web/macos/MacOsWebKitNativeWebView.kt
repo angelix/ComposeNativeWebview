@@ -2,6 +2,8 @@ package dev.nucleusframework.webview.web.macos
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.NativeWebView
 import dev.nucleusframework.window.tao.NucleusPlatformView
 import kotlinx.coroutines.CompletableDeferred
@@ -24,6 +26,7 @@ class MacOsWebKitNativeWebView(
     zoomLevel: Double = 1.0,
     transparent: Boolean = false,
     backgroundColor: Color = Color.White,
+    messageChannel: AttestedMessageChannel? = null,
 ) : NativeWebView() {
     private val handle: Long
     private val nsViewHandle: Long
@@ -60,8 +63,11 @@ class MacOsWebKitNativeWebView(
             bgG = g,
             bgB = b,
             bgA = a,
+            channelName = messageChannel?.name,
+            channelShim = messageChannel?.let { AttestedChannelScripts.macosShim(it.name) },
         )
         require(handle != 0L) { "Failed to create WKWebView" }
+        messageChannel?.let { WebKitMacOsBridge.registerChannel(handle, it) }
         nsViewHandle = WebKitMacOsBridge.nativeGetNsView(handle)
         require(nsViewHandle != 0L) { "Failed to get NSView handle" }
     }

@@ -23,6 +23,7 @@
         { "name": "nativeOnIpcMessage", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnJsResult", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnCookiesResult", "parameterTypes": ["long", "java.lang.String"] },
+        { "name": "nativeOnChannelMessage", "parameterTypes": ["long", "long", "java.lang.String", "boolean", "java.lang.String"] },
         { "name": "nativeOnScreenshotResult", "parameterTypes": ["long", "byte[]"] }
       ]
     },
@@ -36,6 +37,7 @@
         { "name": "nativeOnIpcMessage", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnJsResult", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnCookiesResult", "parameterTypes": ["long", "java.lang.String"] },
+        { "name": "nativeOnSourcedMessage", "parameterTypes": ["long", "long", "java.lang.String", "java.lang.String"] },
         { "name": "nativeOnScreenshotResult", "parameterTypes": ["long", "byte[]"] }
       ]
     },
@@ -123,6 +125,7 @@
         { "name": "nativeOnIpcMessage", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnJsResult", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnCookiesResult", "parameterTypes": ["long", "java.lang.String"] },
+        { "name": "nativeOnChannelMessage", "parameterTypes": ["long", "long", "java.lang.String", "boolean", "java.lang.String"] },
         { "name": "nativeOnScreenshotResult", "parameterTypes": ["long", "byte[]"] }
       ]
     },
@@ -133,6 +136,7 @@
         { "name": "nativeOnIpcMessage", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnJsResult", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnCookiesResult", "parameterTypes": ["long", "java.lang.String"] },
+        { "name": "nativeOnSourcedMessage", "parameterTypes": ["long", "long", "java.lang.String", "java.lang.String"] },
         { "name": "nativeOnScreenshotResult", "parameterTypes": ["long", "byte[]"] }
       ]
     }

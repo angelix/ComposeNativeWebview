@@ -2,6 +2,32 @@
 
 using Microsoft::WRL::Callback;
 
+/* True for an http: or https: URL; the scheme is compared case-insensitively. */
+static bool isHttpUrl(const std::wstring &url) {
+    size_t colon = url.find(L':');
+    if (colon == std::wstring::npos) return false;
+    std::wstring scheme;
+    for (size_t i = 0; i < colon; ++i) {
+        wchar_t c = url[i];
+        scheme.push_back(c >= L'A' && c <= L'Z' ? static_cast<wchar_t>(c - L'A' + L'a') : c);
+    }
+    return scheme == L"http" || scheme == L"https";
+}
+
+/* True only when the runtime reports that the main frame asked for the new window. A runtime
+ * without ICoreWebView2NewWindowRequestedEventArgs3 / ICoreWebView2FrameInfo2 cannot say, so the
+ * request counts as not from the main frame. */
+static bool requestedByMainFrame(ICoreWebView2NewWindowRequestedEventArgs *args) {
+    ComPtr<ICoreWebView2NewWindowRequestedEventArgs3> args3;
+    if (FAILED(args->QueryInterface(IID_PPV_ARGS(args3.GetAddressOf()))) || !args3) return false;
+    ComPtr<ICoreWebView2FrameInfo> frame;
+    if (FAILED(args3->get_OriginalSourceFrameInfo(&frame)) || !frame) return false;
+    ComPtr<ICoreWebView2FrameInfo2> frame2;
+    if (FAILED(frame.As(&frame2)) || !frame2) return false;
+    COREWEBVIEW2_FRAME_KIND kind = COREWEBVIEW2_FRAME_KIND_UNKNOWN;
+    return SUCCEEDED(frame2->get_FrameKind(&kind)) && kind == COREWEBVIEW2_FRAME_KIND_MAIN_FRAME;
+}
+
 void compose_webview_hook_events(ComposeWebViewState *s) {
     auto *raw = s;
 
@@ -119,13 +145,36 @@ void compose_webview_hook_events(ComposeWebViewState *s) {
             }).Get(),
         &s->cursorChangedToken);
 
+    s->webview->add_ContentLoading(
+        Callback<ICoreWebView2ContentLoadingEventHandler>(
+            [raw](ICoreWebView2 *, ICoreWebView2ContentLoadingEventArgs *) -> HRESULT {
+                raw->documentGeneration.fetch_add(1, std::memory_order_acq_rel);
+                return S_OK;
+            }).Get(),
+        &s->contentLoadingToken);
+
     s->webview->add_WebMessageReceived(
         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
             [raw](ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventArgs *args) -> HRESULT {
                 LPWSTR msg = nullptr;
                 if (SUCCEEDED(args->TryGetWebMessageAsString(&msg)) && msg) {
-                    compose_webview_call_on_ipc(raw->handle, compose_webview_wide_to_utf8(msg));
+                    std::wstring message(msg);
                     CoTaskMemFree(msg);
+                    if (raw->channelEnabled) {
+                        LPWSTR src = nullptr;
+                        std::wstring source;
+                        if (SUCCEEDED(args->get_Source(&src)) && src) {
+                            source.assign(src);
+                            CoTaskMemFree(src);
+                        }
+                        compose_webview_call_on_sourced_message(
+                            raw->handle,
+                            raw->documentGeneration.load(std::memory_order_acquire),
+                            source,
+                            message);
+                    } else {
+                        compose_webview_call_on_ipc(raw->handle, compose_webview_wide_to_utf8(message));
+                    }
                 } else {
                     LPWSTR json = nullptr;
                     if (SUCCEEDED(args->get_WebMessageAsJson(&json)) && json) {
@@ -137,6 +186,38 @@ void compose_webview_hook_events(ComposeWebViewState *s) {
                 return S_OK;
             }).Get(),
         &s->webMessageToken);
+
+    /* Camera and microphone are denied; every other permission kind keeps WebView2's default. */
+    s->webview->add_PermissionRequested(
+        Callback<ICoreWebView2PermissionRequestedEventHandler>(
+            [](ICoreWebView2 *, ICoreWebView2PermissionRequestedEventArgs *args) -> HRESULT {
+                COREWEBVIEW2_PERMISSION_KIND kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                if (SUCCEEDED(args->get_PermissionKind(&kind)) &&
+                    (kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA ||
+                     kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE)) {
+                    args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                }
+                return S_OK;
+            }).Get(),
+        &s->permissionRequestedToken);
+
+    /* Never a second window. A popup (window.open, target=_blank) loads in this view only when the
+     * main frame asked for an http(s) URL; a sub-frame (possibly cross-origin) must not navigate the
+     * host's view, and about:blank, javascript:, file:, data: and blob: popups are ignored. */
+    s->webview->add_NewWindowRequested(
+        Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+            [](ICoreWebView2 *wv, ICoreWebView2NewWindowRequestedEventArgs *args) -> HRESULT {
+                args->put_Handled(TRUE);
+                if (!requestedByMainFrame(args)) return S_OK;
+                LPWSTR uri = nullptr;
+                if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
+                    std::wstring url(uri);
+                    CoTaskMemFree(uri);
+                    if (isHttpUrl(url)) wv->Navigate(url.c_str());
+                }
+                return S_OK;
+            }).Get(),
+        &s->newWindowRequestedToken);
 }
 
 void compose_webview_unhook_events(ComposeWebViewState *s) {
@@ -148,6 +229,9 @@ void compose_webview_unhook_events(ComposeWebViewState *s) {
         s->webview->remove_HistoryChanged(s->historyChangedToken);
         s->webview->remove_DocumentTitleChanged(s->documentTitleChangedToken);
         s->webview->remove_WebMessageReceived(s->webMessageToken);
+        s->webview->remove_ContentLoading(s->contentLoadingToken);
+        s->webview->remove_PermissionRequested(s->permissionRequestedToken);
+        s->webview->remove_NewWindowRequested(s->newWindowRequestedToken);
     }
     if (s->compController) {
         s->compController->remove_CursorChanged(s->cursorChangedToken);
