@@ -2,6 +2,7 @@ package dev.nucleusframework.webview.e2e.visualsuite
 
 import android.util.Log
 import androidx.compose.runtime.Composable
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.IWebView
 import dev.nucleusframework.webview.web.WebViewState
 import java.io.File
@@ -27,6 +28,7 @@ actual suspend fun withIsolatedNativeWebView(
     incognito: Boolean,
     dataDirectory: String?,
     enableDevtools: Boolean,
+    messageChannel: AttestedMessageChannel?,
     block: suspend (IsolatedNativeWebView) -> Unit,
 ) {
     error("IsolatedNativeWebView not available on Android")

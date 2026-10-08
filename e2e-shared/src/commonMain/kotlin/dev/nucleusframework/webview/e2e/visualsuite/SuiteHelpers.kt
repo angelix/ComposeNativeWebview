@@ -219,3 +219,6 @@ internal class IntCounter {
         return value
     }
 }
+
+internal fun String.encodeURLComponentForSuite(): String =
+    buildString { for (c in this@encodeURLComponentForSuite) { if (c.isLetterOrDigit() || c in "-_.!~*'()") append(c) else c.toString().encodeToByteArray().forEach { append('%'); append(((it.toInt() and 0xFF) + 0x100).toString(16).substring(1).uppercase()) } } }

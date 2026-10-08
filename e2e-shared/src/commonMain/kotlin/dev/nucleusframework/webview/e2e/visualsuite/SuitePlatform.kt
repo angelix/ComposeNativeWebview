@@ -1,6 +1,7 @@
 package dev.nucleusframework.webview.e2e.visualsuite
 
 import androidx.compose.runtime.Composable
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.IWebView
 import dev.nucleusframework.webview.web.WebViewState
 
@@ -43,6 +44,9 @@ enum class SuiteCapability {
      * Android / iOS / WasmJs still inject it after load.
      */
     DocumentStartJsBridge,
+
+    /** Page→host channel with engine-attested origin/frame (desktop macOS + Windows). */
+    AttestedMessageChannel,
 }
 
 expect fun suiteCapabilities(): Set<SuiteCapability>
@@ -65,6 +69,7 @@ expect suspend fun withIsolatedNativeWebView(
     incognito: Boolean = false,
     dataDirectory: String? = null,
     enableDevtools: Boolean = false,
+    messageChannel: AttestedMessageChannel? = null,
     block: suspend (IsolatedNativeWebView) -> Unit,
 )
 

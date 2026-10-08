@@ -6,6 +6,15 @@
     if (self.webView != nil) {
         self.webView.navigationDelegate = nil;
         [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"ipc"];
+        if (self.channelName != nil) {
+            [self.webView.configuration.userContentController
+                removeScriptMessageHandlerForName:self.channelName
+                                     contentWorld:[WKContentWorld pageWorld]];
+            for (void (^reply)(id, NSString *) in self.pendingReplies.allValues) {
+                reply(nil, @"WebView released");
+            }
+            [self.pendingReplies removeAllObjects];
+        }
         [self.webView removeFromSuperview];
         self.webView = nil;
     }
@@ -35,7 +44,9 @@ Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeCreate(
     jfloat bg_r,
     jfloat bg_g,
     jfloat bg_b,
-    jfloat bg_a)
+    jfloat bg_a,
+    jstring channel_name,
+    jstring channel_shim)
 {
     (void)clazz;
     (void)data_directory; // WKWebsiteDataStore has no simple custom-path API.
@@ -104,6 +115,19 @@ Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeCreate(
              injectionTime:WKUserScriptInjectionTimeAtDocumentStart
           forMainFrameOnly:NO];
         [ucm addUserScript:cssScript];
+    }
+
+    if (channel_name != NULL && channel_shim != NULL) {
+        state.channelName = compose_webview_jstring_to_ns(env, channel_name);
+        state.pendingReplies = [NSMutableDictionary dictionary];
+        [ucm addScriptMessageHandlerWithReply:state
+                                 contentWorld:[WKContentWorld pageWorld]
+                                         name:state.channelName];
+        WKUserScript *channelShim = [[WKUserScript alloc]
+            initWithSource:compose_webview_jstring_to_ns(env, channel_shim)
+             injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+          forMainFrameOnly:YES];
+        [ucm addUserScript:channelShim];
     }
 
     if (init_script != NULL) {
@@ -178,4 +202,19 @@ Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeRelease(
     ComposeWebViewState *state =
         (__bridge_transfer ComposeWebViewState *)(void *)(uintptr_t)handle;
     [state teardown];
+}
+
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeChannelReply(
+    JNIEnv *env, jclass clazz, jlong handle, jlong reply_id, jstring payload)
+{
+    (void)clazz;
+    ComposeWebViewState *state = compose_webview_state_from_handle(handle);
+    if (state == nil || state.pendingReplies == nil) return;
+    NSNumber *key = @(reply_id);
+    void (^reply)(id, NSString *) = state.pendingReplies[key];
+    if (reply == nil) return;
+    [state.pendingReplies removeObjectForKey:key];
+    // WebKit ignores this if the sending document is gone.
+    reply(compose_webview_jstring_to_ns(env, payload) ?: @"", nil);
 }

@@ -86,6 +86,11 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("L07", "Lifecycle", "can recover after Rejected navigation"),
         SuiteCase("L08", "Lifecycle", "isolated destroy() tears down cleanly"),
         SuiteCase("L09", "Lifecycle", "headers load then HTML recovery keeps API live"),
+        // Attested message channel (engine-attested origin and frame)
+        SuiteCase("M01", "Attested channel", "main-frame message carries engine origin; reply resolves"),
+        SuiteCase("M02", "Attested channel", "cross-origin iframe is never attested as main frame"),
+        SuiteCase("M03", "Attested channel", "stale reply after navigation does not resolve the new document"),
+        SuiteCase("M06", "Attested channel", "page cannot replace the channel object"),
         // Rendering — measurements, not thresholds: the backend embeds a real
         // native WebView and never throttles it, so these report what the host
         // actually achieves (see README "Rendering model & frame rate").

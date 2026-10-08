@@ -4,6 +4,8 @@ import composewebview.e2e_shared.generated.resources.Res
 import dev.nucleusframework.webview.cookie.Cookie
 import dev.nucleusframework.webview.jsbridge.IJsMessageHandler
 import dev.nucleusframework.webview.jsbridge.JsMessage
+import dev.nucleusframework.webview.web.AttestedMessage
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.LoadingState
 import dev.nucleusframework.webview.web.WebContent
 import dev.nucleusframework.webview.web.WebViewFileReadType
@@ -722,6 +724,88 @@ internal suspend fun runFullSuite(
     // pacing in this library), so these publish what the host reaches — a
     // healthy value is the display refresh rate. They only fail when the
     // page is not animating at all.
+    case("M01", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply ->
+            received += msg
+            reply("pong:" + msg.body)
+        }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m01-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m01-ready</div><script>
+                    window.suiteChan.postMessage('hi').then(function (r) { window.__m01 = r; });
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("window.__m01 || ''") == "pong:hi" }
+            val msg = received.single()
+            assertThat(msg.body == "hi", "body=${msg.body}")
+            assertThat(msg.origin == "https://main.suite.test", "origin=${msg.origin}")
+            assertThat(msg.isMainFrame, "main frame not attested")
+        }
+    }
+    case("M02", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("x") }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            // The frame tries every route to the host: the WebKit handler, the WebView2 channel, and the
+            // parent's frozen object.
+            val frame = "<script>" +
+                "try{window.webkit.messageHandlers.suiteChan.postMessage('from-frame')}catch(e){}" +
+                "try{window.chrome.webview.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',id:1,body:'from-frame'}))}catch(e){}" +
+                "try{window.parent.suiteChan.postMessage('from-frame')}catch(e){}" +
+                "</script>"
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m02-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m02-ready</div>
+                    <iframe src="data:text/html,${frame.encodeURLComponentForSuite()}"></iframe></body></html>""",
+            )
+            delay(2_000)
+            val fromFrame = received.filter { it.body == "from-frame" }
+            assertThat(fromFrame.none { it.isMainFrame }, "a frame message was attested as main frame: $fromFrame")
+            assertThat(fromFrame.all { it.origin == "null" }, "a frame message carried a non-opaque origin: $fromFrame")
+        }
+    }
+    case("M03", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val replies = mutableListOf<(String) -> Unit>()
+        val channel = AttestedMessageChannel("suiteChan") { _, reply -> replies += reply }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            val page = { tag: String ->
+                """<html><body><div id="marker">$tag</div><script>
+                    window.suiteChan.postMessage('$tag').then(function (r) { window.__m03 = r; });
+                </script></body></html>"""
+            }
+            nv.loadHtmlAwaitMarker(expectedMarker = "m03-a", baseUri = "https://main.suite.test/", html = page("m03-a"))
+            awaitUntil(10_000, "first request") { replies.size == 1 }
+            // Same origin, fresh document: its first request reuses id 1 on Windows.
+            nv.loadHtmlAwaitMarker(expectedMarker = "m03-b", baseUri = "https://main.suite.test/", html = page("m03-b"))
+            awaitUntil(10_000, "second request") { replies.size == 2 }
+            replies[0]("stale")
+            delay(1_000)
+            assertThat(nv.evalJsUnquotedAsync("String(window.__m03)") == "undefined", "stale reply resolved the new document")
+            replies[1]("fresh")
+            awaitUntil(10_000, "fresh reply") { nv.evalJsUnquotedAsync("String(window.__m03)") == "fresh" }
+        }
+    }
+    case("M06", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val channel = AttestedMessageChannel("suiteChan") { _, reply -> reply("real") }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m06-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m06-ready</div><script>
+                    try { window.suiteChan = { postMessage: function () { return Promise.resolve('fake'); } }; } catch (e) {}
+                    try { Object.defineProperty(window, 'suiteChan', { value: 1 }); } catch (e) {}
+                    try { window.suiteChan.postMessage = function () { return Promise.resolve('fake'); }; } catch (e) {}
+                    window.suiteChan.postMessage('x').then(function (r) { window.__m06 = r; });
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("String(window.__m06)") != "undefined" }
+            assertThat(nv.evalJsUnquotedAsync("String(window.__m06)") == "real", "page replaced the channel")
+        }
+    }
     measured("R01") {
         loadHtmlAwaitMarker(ctx.navigator, "raf-probe", pageFrameRate())
         // First second primes window.__fps, the second one is the sample.
