@@ -1,6 +1,7 @@
 package dev.nucleusframework.webview.setting
 
 import androidx.compose.ui.graphics.Color
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 
 /**
  * Platform-specific settings containers.
@@ -28,6 +29,11 @@ sealed class PlatformWebSettings {
         var incognito: Boolean = false,
         var autoplayWithoutUserInteraction: Boolean = false,
         var focused: Boolean = true,
+        /**
+         * Optional page→host channel with engine-attested origin and frame (macOS, Windows).
+         * Read when the native view is created.
+         */
+        var messageChannel: AttestedMessageChannel? = null,
     ) : PlatformWebSettings()
 
     data class IOSWebSettings(

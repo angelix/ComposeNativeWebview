@@ -18,11 +18,13 @@
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) WKWebViewConfiguration *configuration;
 @property (nonatomic, assign) jlong handle;
+@property (nonatomic, copy) NSString *channelName;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, void (^)(id, NSString *)> *pendingReplies;
 - (void)teardown;
 @end
 
 /* Delegate / script-message methods live in view_signals.m */
-@interface ComposeWebViewState (Signals) <WKNavigationDelegate, WKScriptMessageHandler>
+@interface ComposeWebViewState (Signals) <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply>
 @end
 
 /* jni_bridge.m */
@@ -31,12 +33,15 @@ void compose_webview_ensure_bridge_methods(JNIEnv *env);
 jclass compose_webview_bridge_class(void);
 jmethodID compose_webview_on_navigate(void);
 jmethodID compose_webview_on_ipc(void);
+jmethodID compose_webview_on_channel_message(void);
 jmethodID compose_webview_on_js_result(void);
 jmethodID compose_webview_on_cookies(void);
 jmethodID compose_webview_on_screenshot(void);
 
 NSString *compose_webview_jstring_to_ns(JNIEnv *env, jstring js);
 jstring compose_webview_ns_to_jstring(JNIEnv *env, NSString *s);
+jstring compose_webview_utf16_to_jstring(JNIEnv *env, NSString *s);
+NSString *compose_webview_jstring_to_utf16(JNIEnv *env, jstring js);
 NSString *compose_webview_json_escape(NSString *raw);
 
 void compose_webview_deliver_js_result(jlong handle, NSString *payload);

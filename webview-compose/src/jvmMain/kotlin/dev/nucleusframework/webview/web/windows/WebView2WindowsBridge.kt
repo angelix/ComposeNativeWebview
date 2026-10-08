@@ -1,9 +1,18 @@
 package dev.nucleusframework.webview.web.windows
 
 import dev.nucleusframework.core.runtime.NativeLibraryLoader
+import dev.nucleusframework.webview.util.KLogger
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessage
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * JNI bridge to `compose_webview.cpp` (WebView2 CompositionController + DComp).
@@ -16,6 +25,7 @@ import kotlinx.coroutines.CompletableDeferred
  */
 internal object WebView2WindowsBridge {
     private const val LIBRARY_NAME = "compose_webview_windows"
+    private const val LOG_TAG = "WebView2WindowsBridge"
 
     val isLoaded: Boolean =
         NativeLibraryLoader.load(
@@ -34,6 +44,15 @@ internal object WebView2WindowsBridge {
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<String>>>()
     private val screenshotDeferreds =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<ByteArray?>>>()
+
+    private val channels = ConcurrentHashMap<Long, AttestedMessageChannel>()
+
+    // Replies run native calls, which must happen on the Tao main thread.
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    fun registerChannel(handle: Long, channel: AttestedMessageChannel) {
+        channels[handle] = channel
+    }
 
     fun addNavigateListener(handle: Long, listener: (String) -> Boolean) {
         navigateHandlers.getOrPut(handle) { mutableListOf() }.add(listener)
@@ -67,6 +86,7 @@ internal object WebView2WindowsBridge {
 
     fun clearHandle(handle: Long) {
         navigateHandlers.remove(handle)
+        channels.remove(handle)
         ipcQueues.remove(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
@@ -89,6 +109,36 @@ internal object WebView2WindowsBridge {
     @JvmStatic
     fun nativeOnIpcMessage(handle: Long, message: String) {
         ipcQueues.getOrPut(handle) { ConcurrentLinkedQueue() }.add(message)
+    }
+
+    /**
+     * A string message from the top-level document, tagged with that document's URI and the
+     * navigation generation it arrived in. Messages that are not envelopes for the channel
+     * (the library's own `window.ipc` and JS bridge traffic) go to the IPC queue.
+     */
+    @JvmStatic
+    fun nativeOnSourcedMessage(handle: Long, generation: Long, source: String, raw: String) {
+        val channel = channels[handle]
+        val envelope = channel?.let { AttestedChannelScripts.parseWindowsEnvelope(raw, it.name) }
+        if (channel == null || envelope == null) {
+            nativeOnIpcMessage(handle, raw)
+            return
+        }
+        val origin = AttestedChannelScripts.originOf(source)
+        val replied = AtomicBoolean(false)
+        // Only the top-level document reaches CoreWebView2.WebMessageReceived (iframes need
+        // CoreWebView2Frame), and the shim installs only in the top frame.
+        try {
+            channel.onMessage(AttestedMessage(body = envelope.body, origin = origin, isMainFrame = true)) { payload ->
+                if (!replied.compareAndSet(false, true)) return@onMessage
+                val script = AttestedChannelScripts.windowsReplyScript(channel.name, origin, envelope.document, envelope.id, payload)
+                mainScope.launch {
+                    if (channels.containsKey(handle)) nativeExecuteIfGeneration(handle, generation, script)
+                }
+            }
+        } catch (t: Throwable) {
+            KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
+        }
     }
 
     @JvmStatic
@@ -124,10 +174,14 @@ internal object WebView2WindowsBridge {
         bgG: Float,
         bgB: Float,
         bgA: Float,
+        channelShim: String?,
     ): Long
 
     @JvmStatic
     external fun nativeRelease(handle: Long)
+
+    @JvmStatic
+    external fun nativeExecuteIfGeneration(handle: Long, generation: Long, script: String)
 
     @JvmStatic
     external fun nativeLoadUrl(handle: Long, url: String)

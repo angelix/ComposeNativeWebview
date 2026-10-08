@@ -1,4 +1,9 @@
 #include "compose_webview_internal.h"
+#include <stdatomic.h>
+
+// Reply ids are unique across every WebView so a reply held for one WebView can never match a request
+// of another that later reuses its state's memory address.
+static _Atomic jlong g_next_reply_id = 0;
 
 @implementation ComposeWebViewState (Signals)
 
@@ -35,6 +40,59 @@
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
     }
+}
+
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message
+                 replyHandler:(void (^)(id _Nullable, NSString * _Nullable))replyHandler
+{
+    (void)userContentController;
+    if (self.channelName == nil || ![message.name isEqualToString:self.channelName] ||
+        ![message.body isKindOfClass:[NSString class]]) {
+        replyHandler(nil, @"Unsupported message");
+        return;
+    }
+    WKFrameInfo *frame = message.frameInfo;
+    WKSecurityOrigin *o = frame.securityOrigin;
+    NSString *origin = @"null";
+    if (o.host.length > 0 && ([o.protocol isEqualToString:@"https"] || [o.protocol isEqualToString:@"http"])) {
+        BOOL defaultPort = o.port == 0 ||
+            ([o.protocol isEqualToString:@"https"] && o.port == 443) ||
+            ([o.protocol isEqualToString:@"http"] && o.port == 80);
+        origin = defaultPort
+            ? [NSString stringWithFormat:@"%@://%@", o.protocol, o.host.lowercaseString]
+            : [NSString stringWithFormat:@"%@://%@:%ld", o.protocol, o.host.lowercaseString, (long)o.port];
+    }
+
+    JNIEnv *env = compose_webview_get_env();
+    if (env == NULL) {
+        replyHandler(nil, @"Host unavailable");
+        return;
+    }
+    compose_webview_ensure_bridge_methods(env);
+    if (compose_webview_bridge_class() == NULL || compose_webview_on_channel_message() == NULL) {
+        replyHandler(nil, @"Host unavailable");
+        return;
+    }
+
+    jstring jorigin = compose_webview_utf16_to_jstring(env, origin);
+    jstring jbody = compose_webview_utf16_to_jstring(env, (NSString *)message.body);
+    if (jorigin == NULL || jbody == NULL) {
+        if (jorigin != NULL) (*env)->DeleteLocalRef(env, jorigin);
+        if (jbody != NULL) (*env)->DeleteLocalRef(env, jbody);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        replyHandler(nil, @"Message could not be delivered");
+        return;
+    }
+
+    jlong replyId = atomic_fetch_add(&g_next_reply_id, 1) + 1;
+    self.pendingReplies[@(replyId)] = [replyHandler copy];
+    (*env)->CallStaticVoidMethod(
+        env, compose_webview_bridge_class(), compose_webview_on_channel_message(),
+        self.handle, replyId, jorigin, frame.isMainFrame ? JNI_TRUE : JNI_FALSE, jbody);
+    if (jorigin != NULL) (*env)->DeleteLocalRef(env, jorigin);
+    if (jbody != NULL) (*env)->DeleteLocalRef(env, jbody);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
 }
 
 - (void)webView:(WKWebView *)webView
@@ -75,6 +133,35 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
         return;
     }
     decisionHandler(allow ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
+}
+
+- (WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(WKWindowFeatures *)windowFeatures
+{
+    (void)configuration;
+    (void)windowFeatures;
+    // Never a second window. A popup (window.open, target=_blank) loads in this view only when the
+    // main frame asked for an http(s) URL; a sub-frame (possibly cross-origin) must not navigate the
+    // host's view, and about:blank, javascript:, file:, data: and blob: popups are ignored.
+    NSString *scheme = navigationAction.request.URL.scheme.lowercaseString;
+    BOOL webScheme = [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"];
+    if (navigationAction.sourceFrame.isMainFrame && webScheme) {
+        [webView loadRequest:navigationAction.request];
+    }
+    return nil;
+}
+
+- (void)webView:(WKWebView *)webView
+    requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin
+                          initiatedByFrame:(WKFrameInfo *)frame
+                                      type:(WKMediaCaptureType)type
+                           decisionHandler:(void (^)(WKPermissionDecision))decisionHandler
+API_AVAILABLE(macos(12.0))
+{
+    (void)webView; (void)origin; (void)frame; (void)type;
+    decisionHandler(WKPermissionDecisionDeny);
 }
 
 @end

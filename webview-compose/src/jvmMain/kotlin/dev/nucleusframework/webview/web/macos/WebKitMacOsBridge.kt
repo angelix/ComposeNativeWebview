@@ -1,9 +1,17 @@
 package dev.nucleusframework.webview.web.macos
 
 import dev.nucleusframework.core.runtime.NativeLibraryLoader
+import dev.nucleusframework.webview.util.KLogger
+import dev.nucleusframework.webview.web.AttestedMessage
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * JNI bridge to `compose_webview_macos.m` (WKWebView).
@@ -13,6 +21,7 @@ import kotlinx.coroutines.CompletableDeferred
  */
 internal object WebKitMacOsBridge {
     private const val LIBRARY_NAME = "compose_webview_macos"
+    private const val LOG_TAG = "WebKitMacOsBridge"
 
     val isLoaded: Boolean =
         NativeLibraryLoader.load(
@@ -30,6 +39,15 @@ internal object WebKitMacOsBridge {
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<String>>>()
     private val screenshotDeferreds =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<ByteArray?>>>()
+
+    private val channels = ConcurrentHashMap<Long, AttestedMessageChannel>()
+
+    // Native reply handlers must be invoked on the AppKit main thread, which is the Tao event loop.
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    fun registerChannel(handle: Long, channel: AttestedMessageChannel) {
+        channels[handle] = channel
+    }
 
     fun addNavigateListener(handle: Long, listener: (String) -> Boolean) {
         navigateHandlers.getOrPut(handle) { mutableListOf() }.add(listener)
@@ -63,6 +81,7 @@ internal object WebKitMacOsBridge {
 
     fun clearHandle(handle: Long) {
         navigateHandlers.remove(handle)
+        channels.remove(handle)
         ipcQueues.remove(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
@@ -85,6 +104,27 @@ internal object WebKitMacOsBridge {
     @JvmStatic
     fun nativeOnIpcMessage(handle: Long, message: String) {
         ipcQueues.getOrPut(handle) { ConcurrentLinkedQueue() }.add(message)
+    }
+
+    @JvmStatic
+    fun nativeOnChannelMessage(handle: Long, replyId: Long, origin: String, isMainFrame: Boolean, body: String) {
+        val channel = channels[handle]
+        if (channel == null) {
+            // The native side parks the page's reply handler; teardown rejects it.
+            KLogger.w(tag = LOG_TAG) { "channel message for handle $handle with no registered channel" }
+            return
+        }
+        val replied = AtomicBoolean(false)
+        try {
+            channel.onMessage(AttestedMessage(body = body, origin = origin, isMainFrame = isMainFrame)) { payload ->
+                if (!replied.compareAndSet(false, true)) return@onMessage
+                mainScope.launch {
+                    if (channels.containsKey(handle)) nativeChannelReply(handle, replyId, payload)
+                }
+            }
+        } catch (t: Throwable) {
+            KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
+        }
     }
 
     @JvmStatic
@@ -119,6 +159,8 @@ internal object WebKitMacOsBridge {
         bgG: Float,
         bgB: Float,
         bgA: Float,
+        channelName: String?,
+        channelShim: String?,
     ): Long
 
     @JvmStatic
@@ -126,6 +168,9 @@ internal object WebKitMacOsBridge {
 
     @JvmStatic
     external fun nativeRelease(handle: Long)
+
+    @JvmStatic
+    external fun nativeChannelReply(handle: Long, replyId: Long, payload: String)
 
     @JvmStatic
     external fun nativeLoadUrl(handle: Long, url: String)

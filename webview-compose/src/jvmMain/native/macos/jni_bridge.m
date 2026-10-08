@@ -4,6 +4,7 @@ static JavaVM *g_jvm = NULL;
 static jclass g_bridge_class = NULL;
 static jmethodID g_on_navigate = NULL;
 static jmethodID g_on_ipc = NULL;
+static jmethodID g_on_channel = NULL;
 static jmethodID g_on_js_result = NULL;
 static jmethodID g_on_cookies = NULL;
 static jmethodID g_on_screenshot = NULL;
@@ -40,6 +41,8 @@ void compose_webview_ensure_bridge_methods(JNIEnv *env) {
         env, g_bridge_class, "nativeOnNavigate", "(JLjava/lang/String;)Z");
     g_on_ipc = (*env)->GetStaticMethodID(
         env, g_bridge_class, "nativeOnIpcMessage", "(JLjava/lang/String;)V");
+    g_on_channel = (*env)->GetStaticMethodID(
+        env, g_bridge_class, "nativeOnChannelMessage", "(JJLjava/lang/String;ZLjava/lang/String;)V");
     g_on_js_result = (*env)->GetStaticMethodID(
         env, g_bridge_class, "nativeOnJsResult", "(JLjava/lang/String;)V");
     g_on_cookies = (*env)->GetStaticMethodID(
@@ -51,6 +54,7 @@ void compose_webview_ensure_bridge_methods(JNIEnv *env) {
 jclass compose_webview_bridge_class(void) { return g_bridge_class; }
 jmethodID compose_webview_on_navigate(void) { return g_on_navigate; }
 jmethodID compose_webview_on_ipc(void) { return g_on_ipc; }
+jmethodID compose_webview_on_channel_message(void) { return g_on_channel; }
 jmethodID compose_webview_on_js_result(void) { return g_on_js_result; }
 jmethodID compose_webview_on_cookies(void) { return g_on_cookies; }
 jmethodID compose_webview_on_screenshot(void) { return g_on_screenshot; }
@@ -69,6 +73,29 @@ jstring compose_webview_ns_to_jstring(JNIEnv *env, NSString *s) {
     const char *utf = [s UTF8String];
     if (utf == NULL) return NULL;
     return (*env)->NewStringUTF(env, utf);
+}
+
+// UTF-16 conversions keep non-BMP characters and lone surrogates intact; the UTF-8 helpers above
+// go through JNI's modified UTF-8 and cannot.
+jstring compose_webview_utf16_to_jstring(JNIEnv *env, NSString *s) {
+    if (s == nil) return NULL;
+    NSUInteger length = s.length;
+    unichar *buffer = malloc((length > 0 ? length : 1) * sizeof(unichar));
+    if (buffer == NULL) return NULL;
+    [s getCharacters:buffer range:NSMakeRange(0, length)];
+    jstring out = (*env)->NewString(env, (const jchar *)buffer, (jsize)length);
+    free(buffer);
+    return out;
+}
+
+NSString *compose_webview_jstring_to_utf16(JNIEnv *env, jstring js) {
+    if (js == NULL) return nil;
+    const jchar *chars = (*env)->GetStringChars(env, js, NULL);
+    if (chars == NULL) return nil;
+    NSString *out = [NSString stringWithCharacters:(const unichar *)chars
+                                            length:(NSUInteger)(*env)->GetStringLength(env, js)];
+    (*env)->ReleaseStringChars(env, js, chars);
+    return out;
 }
 
 NSString *compose_webview_json_escape(NSString *raw) {
