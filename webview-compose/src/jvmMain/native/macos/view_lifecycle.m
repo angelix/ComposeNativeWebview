@@ -217,7 +217,8 @@ Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeChannelReply
     if (reply == nil) return;
     [state.pendingReplies removeObjectForKey:key];
     NSString *text = compose_webview_jstring_to_utf16(env, payload);
-    // WebKit ignores this if the sending document is gone.
+    // WebKit settles the promise of the document that sent the message, never a later one; after a
+    // navigation its callback can still run in the old document while that document is referenced.
     if (text == nil) {
         reply(nil, @"Reply could not be delivered");
         return;
