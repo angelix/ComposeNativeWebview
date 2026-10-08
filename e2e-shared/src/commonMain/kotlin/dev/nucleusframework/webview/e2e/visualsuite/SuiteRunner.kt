@@ -861,20 +861,28 @@ internal suspend fun runFullSuite(
         if (visibility != "visible") {
             skipCase("document is $visibility (window occluded/backgrounded)")
         }
+        // Without a camera getUserMedia rejects with NotFoundError before any
+        // permission decision, which says nothing about the permission default.
         evalJs(
             ctx.navigator,
             """(function(){
                  window.__d01 = 'pending';
-                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { window.__d01 = 'denied:unavailable'; return 'x'; }
-                 navigator.mediaDevices.getUserMedia({ video: true }).then(
-                   function () { window.__d01 = 'granted'; },
-                   function (e) { window.__d01 = 'denied:' + (e && e.name); });
+                 var md = navigator.mediaDevices;
+                 if (!md || !md.getUserMedia || !md.enumerateDevices) { window.__d01 = 'skip:mediaDevices unavailable'; return 'x'; }
+                 md.enumerateDevices().then(function (devices) {
+                   var hasCamera = devices.some(function (d) { return d.kind === 'videoinput'; });
+                   if (!hasCamera) { window.__d01 = 'skip:no videoinput device'; return; }
+                   md.getUserMedia({ video: true }).then(
+                     function () { window.__d01 = 'granted'; },
+                     function (e) { window.__d01 = 'rejected:' + (e && e.name); });
+                 }, function (e) { window.__d01 = 'skip:enumerateDevices failed ' + (e && e.name); });
                  return 'x';
                })()""",
         )
         awaitUntil(10_000, "decision") { evalJsUnquoted(ctx.navigator, "window.__d01 || ''") != "pending" }
         val result = evalJsUnquoted(ctx.navigator, "window.__d01")
-        assertThat(result.startsWith("denied"), "camera: $result")
+        if (result.startsWith("skip:")) skipCase(result.removePrefix("skip:"))
+        assertThat(result == "rejected:NotAllowedError", "camera: $result")
     }
     case("D02", required = setOf(SuiteCapability.DesktopNativeControls)) {
         loadHtmlAwaitMarker(ctx.navigator, "p02", pageWithMarker("p02"))
