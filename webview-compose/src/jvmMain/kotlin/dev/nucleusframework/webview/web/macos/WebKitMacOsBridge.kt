@@ -1,6 +1,7 @@
 package dev.nucleusframework.webview.web.macos
 
 import dev.nucleusframework.core.runtime.NativeLibraryLoader
+import dev.nucleusframework.webview.util.KLogger
 import dev.nucleusframework.webview.web.AttestedMessage
 import dev.nucleusframework.webview.web.AttestedMessageChannel
 import java.util.concurrent.ConcurrentHashMap
@@ -20,6 +21,7 @@ import kotlinx.coroutines.launch
  */
 internal object WebKitMacOsBridge {
     private const val LIBRARY_NAME = "compose_webview_macos"
+    private const val LOG_TAG = "WebKitMacOsBridge"
 
     val isLoaded: Boolean =
         NativeLibraryLoader.load(
@@ -106,13 +108,22 @@ internal object WebKitMacOsBridge {
 
     @JvmStatic
     fun nativeOnChannelMessage(handle: Long, replyId: Long, origin: String, isMainFrame: Boolean, body: String) {
-        val channel = channels[handle] ?: return
+        val channel = channels[handle]
+        if (channel == null) {
+            // The native side parks the page's reply handler; teardown rejects it.
+            KLogger.w(tag = LOG_TAG) { "channel message for handle $handle with no registered channel" }
+            return
+        }
         val replied = AtomicBoolean(false)
-        channel.onMessage(AttestedMessage(body = body, origin = origin, isMainFrame = isMainFrame)) { payload ->
-            if (!replied.compareAndSet(false, true)) return@onMessage
-            mainScope.launch {
-                if (channels.containsKey(handle)) nativeChannelReply(handle, replyId, payload)
+        try {
+            channel.onMessage(AttestedMessage(body = body, origin = origin, isMainFrame = isMainFrame)) { payload ->
+                if (!replied.compareAndSet(false, true)) return@onMessage
+                mainScope.launch {
+                    if (channels.containsKey(handle)) nativeChannelReply(handle, replyId, payload)
+                }
             }
+        } catch (t: Throwable) {
+            KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
         }
     }
 

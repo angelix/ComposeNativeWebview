@@ -82,6 +82,10 @@ class AttestedChannelScriptsTest {
             assertFalse("configurable: true" in shim)
         }
         assertTrue("window.webkit.messageHandlers[\"wallet\"]" in AttestedChannelScripts.macosShim("wallet"))
+        assertTrue(
+            "h.postMessage.bind(h)" in AttestedChannelScripts.macosShim("wallet"),
+            "the handler's postMessage is captured at document start, before page scripts run",
+        )
         assertTrue("__nucleusChannel" in AttestedChannelScripts.windowsShim("wallet"))
         assertTrue(AttestedChannelScripts.resolverName("wallet") in AttestedChannelScripts.windowsShim("wallet"))
         val windows = AttestedChannelScripts.windowsShim("wallet")
@@ -94,5 +98,14 @@ class AttestedChannelScriptsTest {
         kotlin.test.assertFailsWith<IllegalArgumentException> { AttestedMessageChannel("bad name") { _, _ -> } }
         kotlin.test.assertFailsWith<IllegalArgumentException> { AttestedMessageChannel("ipc") { _, _ -> } }
         AttestedMessageChannel("coinomiWallet") { _, _ -> }
+    }
+
+    @Test
+    fun channelNames_mustDifferFromTheJsBridgeName() {
+        val channel = AttestedMessageChannel("kmpJsBridge") { _, _ -> }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { channel.requireDistinctFromJsBridge("kmpJsBridge") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { channel.requireDistinctFromJsBridge(" kmpJsBridge ") }
+        channel.requireDistinctFromJsBridge("otherBridge")
+        channel.requireDistinctFromJsBridge(null)
     }
 }

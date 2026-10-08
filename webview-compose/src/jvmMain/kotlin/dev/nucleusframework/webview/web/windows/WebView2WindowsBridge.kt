@@ -1,6 +1,7 @@
 package dev.nucleusframework.webview.web.windows
 
 import dev.nucleusframework.core.runtime.NativeLibraryLoader
+import dev.nucleusframework.webview.util.KLogger
 import dev.nucleusframework.webview.web.AttestedChannelScripts
 import dev.nucleusframework.webview.web.AttestedMessage
 import dev.nucleusframework.webview.web.AttestedMessageChannel
@@ -24,6 +25,7 @@ import kotlinx.coroutines.launch
  */
 internal object WebView2WindowsBridge {
     private const val LIBRARY_NAME = "compose_webview_windows"
+    private const val LOG_TAG = "WebView2WindowsBridge"
 
     val isLoaded: Boolean =
         NativeLibraryLoader.load(
@@ -126,12 +128,16 @@ internal object WebView2WindowsBridge {
         val replied = AtomicBoolean(false)
         // Only the top-level document reaches CoreWebView2.WebMessageReceived (iframes need
         // CoreWebView2Frame), and the shim installs only in the top frame.
-        channel.onMessage(AttestedMessage(body = envelope.body, origin = origin, isMainFrame = true)) { payload ->
-            if (!replied.compareAndSet(false, true)) return@onMessage
-            val script = AttestedChannelScripts.windowsReplyScript(channel.name, origin, envelope.document, envelope.id, payload)
-            mainScope.launch {
-                if (channels.containsKey(handle)) nativeExecuteIfGeneration(handle, generation, script)
+        try {
+            channel.onMessage(AttestedMessage(body = envelope.body, origin = origin, isMainFrame = true)) { payload ->
+                if (!replied.compareAndSet(false, true)) return@onMessage
+                val script = AttestedChannelScripts.windowsReplyScript(channel.name, origin, envelope.document, envelope.id, payload)
+                mainScope.launch {
+                    if (channels.containsKey(handle)) nativeExecuteIfGeneration(handle, generation, script)
+                }
             }
+        } catch (t: Throwable) {
+            KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
         }
     }
 

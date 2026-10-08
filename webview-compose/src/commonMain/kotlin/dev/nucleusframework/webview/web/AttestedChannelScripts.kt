@@ -55,8 +55,9 @@ internal object AttestedChannelScripts {
           var handlers = window.webkit && window.webkit.messageHandlers;
           var h = handlers && window.webkit.messageHandlers[${js(channel)}];
           if (!h || Object.prototype.hasOwnProperty.call(window, ${js(channel)})) { return; }
+          var post = h.postMessage.bind(h);
           Object.defineProperty(window, ${js(channel)}, {
-            value: Object.freeze({ postMessage: function (body) { return h.postMessage(String(body)); } }),
+            value: Object.freeze({ postMessage: function (body) { return post(String(body)); } }),
             writable: false, configurable: false, enumerable: false
           });
         })();
