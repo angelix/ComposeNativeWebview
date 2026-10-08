@@ -147,6 +147,7 @@ Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeCreate(
 
     WKWebView *webview = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:config];
     webview.navigationDelegate = state;
+    webview.UIDelegate = state;
     webview.allowsBackForwardNavigationGestures = YES;
 
     if (user_agent != NULL) {

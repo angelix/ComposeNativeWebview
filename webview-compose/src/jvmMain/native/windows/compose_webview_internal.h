@@ -64,6 +64,8 @@ struct ComposeWebViewState {
     EventRegistrationToken cursorChangedToken{};
     EventRegistrationToken webMessageToken{};
     EventRegistrationToken contentLoadingToken{};
+    EventRegistrationToken permissionRequestedToken{};
+    EventRegistrationToken newWindowRequestedToken{};
 
     /* Counts top-level documents; a reply addressed to an earlier one is dropped. */
     std::atomic<jlong> documentGeneration{0};

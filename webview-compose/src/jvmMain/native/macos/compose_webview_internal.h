@@ -24,7 +24,7 @@
 @end
 
 /* Delegate / script-message methods live in view_signals.m */
-@interface ComposeWebViewState (Signals) <WKNavigationDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply>
+@interface ComposeWebViewState (Signals) <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply>
 @end
 
 /* jni_bridge.m */

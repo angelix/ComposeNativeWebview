@@ -92,6 +92,9 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("M03", "Attested channel", "stale reply after navigation does not resolve the new document"),
         SuiteCase("M04", "Attested channel", "reply held for a destroyed WebView does not resolve a later WebView"),
         SuiteCase("M06", "Attested channel", "page cannot replace the channel object"),
+        // Desktop safety defaults
+        SuiteCase("D01", "Safety", "getUserMedia is denied without a prompt"),
+        SuiteCase("D02", "Safety", "window.open loads in the same view"),
         // Rendering — measurements, not thresholds: the backend embeds a real
         // native WebView and never throttles it, so these report what the host
         // actually achieves (see README "Rendering model & frame rate").

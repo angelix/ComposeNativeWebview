@@ -853,6 +853,36 @@ internal suspend fun runFullSuite(
             assertThat(nv.evalJsUnquotedAsync("String(window.__m06)") == "real", "page replaced the channel")
         }
     }
+    case("D01", required = setOf(SuiteCapability.DesktopNativeControls)) {
+        loadHtmlAwaitMarker(ctx.navigator, "d01", pageWithMarker("d01"))
+        // Engines defer getUserMedia for a hidden document, so an occluded window
+        // never reaches the permission decision.
+        val visibility = evalJsUnquoted(ctx.navigator, "document.visibilityState")
+        if (visibility != "visible") {
+            skipCase("document is $visibility (window occluded/backgrounded)")
+        }
+        evalJs(
+            ctx.navigator,
+            """(function(){
+                 window.__d01 = 'pending';
+                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { window.__d01 = 'denied:unavailable'; return 'x'; }
+                 navigator.mediaDevices.getUserMedia({ video: true }).then(
+                   function () { window.__d01 = 'granted'; },
+                   function (e) { window.__d01 = 'denied:' + (e && e.name); });
+                 return 'x';
+               })()""",
+        )
+        awaitUntil(10_000, "decision") { evalJsUnquoted(ctx.navigator, "window.__d01 || ''") != "pending" }
+        val result = evalJsUnquoted(ctx.navigator, "window.__d01")
+        assertThat(result.startsWith("denied"), "camera: $result")
+    }
+    case("D02", required = setOf(SuiteCapability.DesktopNativeControls)) {
+        loadHtmlAwaitMarker(ctx.navigator, "p02", pageWithMarker("p02"))
+        evalJs(ctx.navigator, "window.open('about:blank#popup-p02', '_blank'); 'x'")
+        awaitUntil(10_000, "same-view navigation") {
+            evalJsUnquoted(ctx.navigator, "location.href").contains("popup-p02")
+        }
+    }
     measured("R01") {
         loadHtmlAwaitMarker(ctx.navigator, "raf-probe", pageFrameRate())
         // First second primes window.__fps, the second one is the sample.

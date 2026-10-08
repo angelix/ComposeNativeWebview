@@ -160,6 +160,28 @@ void compose_webview_hook_events(ComposeWebViewState *s) {
                 return S_OK;
             }).Get(),
         &s->webMessageToken);
+
+    s->webview->add_PermissionRequested(
+        Callback<ICoreWebView2PermissionRequestedEventHandler>(
+            [](ICoreWebView2 *, ICoreWebView2PermissionRequestedEventArgs *args) -> HRESULT {
+                args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                return S_OK;
+            }).Get(),
+        &s->permissionRequestedToken);
+
+    // Popups (window.open, target=_blank) load in this view; no second window.
+    s->webview->add_NewWindowRequested(
+        Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+            [](ICoreWebView2 *wv, ICoreWebView2NewWindowRequestedEventArgs *args) -> HRESULT {
+                LPWSTR uri = nullptr;
+                args->put_Handled(TRUE);
+                if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
+                    wv->Navigate(uri);
+                    CoTaskMemFree(uri);
+                }
+                return S_OK;
+            }).Get(),
+        &s->newWindowRequestedToken);
 }
 
 void compose_webview_unhook_events(ComposeWebViewState *s) {
@@ -172,6 +194,8 @@ void compose_webview_unhook_events(ComposeWebViewState *s) {
         s->webview->remove_DocumentTitleChanged(s->documentTitleChangedToken);
         s->webview->remove_WebMessageReceived(s->webMessageToken);
         s->webview->remove_ContentLoading(s->contentLoadingToken);
+        s->webview->remove_PermissionRequested(s->permissionRequestedToken);
+        s->webview->remove_NewWindowRequested(s->newWindowRequestedToken);
     }
     if (s->compController) {
         s->compController->remove_CursorChanged(s->cursorChangedToken);

@@ -135,4 +135,29 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
     decisionHandler(allow ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
 }
 
+- (WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(WKWindowFeatures *)windowFeatures
+{
+    (void)configuration;
+    (void)windowFeatures;
+    // Popups (window.open, target=_blank) load in this view; no second window.
+    if (navigationAction.request.URL != nil) {
+        [webView loadRequest:navigationAction.request];
+    }
+    return nil;
+}
+
+- (void)webView:(WKWebView *)webView
+    requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin
+                          initiatedByFrame:(WKFrameInfo *)frame
+                                      type:(WKMediaCaptureType)type
+                           decisionHandler:(void (^)(WKPermissionDecision))decisionHandler
+API_AVAILABLE(macos(12.0))
+{
+    (void)webView; (void)origin; (void)frame; (void)type;
+    decisionHandler(WKPermissionDecisionDeny);
+}
+
 @end
