@@ -142,8 +142,12 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
 {
     (void)configuration;
     (void)windowFeatures;
-    // Popups (window.open, target=_blank) load in this view; no second window.
-    if (navigationAction.request.URL != nil) {
+    // Never a second window. A popup (window.open, target=_blank) loads in this view only when the
+    // main frame asked for an http(s) URL; a sub-frame (possibly cross-origin) must not navigate the
+    // host's view, and about:blank, javascript:, file:, data: and blob: popups are ignored.
+    NSString *scheme = navigationAction.request.URL.scheme.lowercaseString;
+    BOOL webScheme = [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"];
+    if (navigationAction.sourceFrame.isMainFrame && webScheme) {
         [webView loadRequest:navigationAction.request];
     }
     return nil;

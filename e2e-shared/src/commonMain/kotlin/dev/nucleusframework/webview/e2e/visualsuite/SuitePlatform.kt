@@ -53,6 +53,18 @@ enum class SuiteCapability {
      * Without it (Windows) they must never arrive.
      */
     AttestedSubframeDelivery,
+
+    /**
+     * `loadHtml(html, baseUri)` gives the document the base URI's origin (macOS). Without it
+     * (Windows) the HTML loads as a `data:` document whose origin is "null".
+     */
+    LoadHtmlBaseUriOrigin,
+
+    /**
+     * Device-permission requests are denied and main-frame http(s) popups load in the same view
+     * (desktop macOS + Windows).
+     */
+    DesktopSafetyDefaults,
 }
 
 expect fun suiteCapabilities(): Set<SuiteCapability>

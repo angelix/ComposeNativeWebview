@@ -719,11 +719,7 @@ internal suspend fun runFullSuite(
         assertThat(r.contains("2"), "API dead after headers path: $r")
     }
 
-    // ── Rendering ────────────────────────────────────────────────────
-    // The WebView is a real native view (no offscreen rendering, no frame
-    // pacing in this library), so these publish what the host reaches — a
-    // healthy value is the display refresh rate. They only fail when the
-    // page is not animating at all.
+    // ── Attested channel ─────────────────────────────────────────────
     case("M01", required = setOf(SuiteCapability.AttestedMessageChannel)) {
         val received = mutableListOf<AttestedMessage>()
         val channel = AttestedMessageChannel("suiteChan") { msg, reply ->
@@ -743,7 +739,12 @@ internal suspend fun runFullSuite(
             awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("window.__m01 || ''") == "ok" }
             val msg = received.single()
             assertThat(msg.body == "hi\uD83E\uDD8Axyz", "body=${msg.body}")
-            assertThat(msg.origin == "https://main.suite.test", "origin=${msg.origin}")
+            val pageOrigin = nv.evalJsUnquotedAsync("location.origin")
+            assertThat(msg.origin == pageOrigin, "origin=${msg.origin}, page location.origin=$pageOrigin")
+            assertThat(
+                SuiteCapability.LoadHtmlBaseUriOrigin !in caps || msg.origin == "https://main.suite.test",
+                "origin=${msg.origin}, expected the base URI's origin",
+            )
             assertThat(msg.isMainFrame, "main frame not attested")
         }
     }
@@ -752,30 +753,37 @@ internal suspend fun runFullSuite(
         val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("x") }
         withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
             // The frame tries every route to the host: the WebKit handler, the WebView2 channel, and the
-            // parent's frozen object.
+            // parent's frozen object. It then tells the top page that it ran and whether it saw the
+            // WebView2 channel, so the case cannot pass because the frame never executed.
             val frame = "<script>" +
                 "try{window.webkit.messageHandlers.suiteChan.postMessage('from-frame')}catch(e){}" +
                 "try{window.chrome.webview.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',doc:'frame',id:1,body:'from-frame'}))}catch(e){}" +
                 "try{window.parent.suiteChan.postMessage('from-frame')}catch(e){}" +
+                "parent.postMessage({m02ran:true,hasWebview:!!(window.chrome&&window.chrome.webview)},'*');" +
                 "</script>"
             nv.loadHtmlAwaitMarker(
                 expectedMarker = "m02-ready",
                 baseUri = "https://main.suite.test/",
-                html = """<html><body><div id="marker">m02-ready</div>
-                    <iframe src="data:text/html,${frame.encodeURLComponentForSuite()}"></iframe></body></html>""",
+                html = """<html><body><div id="marker">m02-ready</div><script>
+                    window.addEventListener('message', function (e) {
+                        if (e.data && e.data.m02ran) { document.__m02ran = 'hasWebview=' + e.data.hasWebview; }
+                    });
+                    </script><iframe src="data:text/html,${frame.encodeURLComponentForSuite()}"></iframe></body></html>""",
             )
+            awaitUntil(10_000, "frame ran") { nv.evalJsUnquotedAsync("document.__m02ran || ''").isNotEmpty() }
+            val frameReport = nv.evalJsUnquotedAsync("document.__m02ran")
             delay(2_000)
             val fromFrame = received.filter { it.body == "from-frame" }
             assertThat(
                 SuiteCapability.AttestedSubframeDelivery !in caps || fromFrame.isNotEmpty(),
-                "the frame message never arrived, so nothing was attested",
+                "the frame message never arrived, so nothing was attested ($frameReport)",
             )
             assertThat(
                 SuiteCapability.AttestedSubframeDelivery in caps || fromFrame.isEmpty(),
-                "a platform without subframe delivery attested a frame message: $fromFrame",
+                "a platform without subframe delivery attested a frame message ($frameReport): $fromFrame",
             )
-            assertThat(fromFrame.none { it.isMainFrame }, "a frame message was attested as main frame: $fromFrame")
-            assertThat(fromFrame.all { it.origin == "null" }, "a frame message carried a non-opaque origin: $fromFrame")
+            assertThat(fromFrame.none { it.isMainFrame }, "a frame message was attested as main frame ($frameReport): $fromFrame")
+            assertThat(fromFrame.all { it.origin == "null" }, "a frame message carried a non-opaque origin ($frameReport): $fromFrame")
         }
     }
     case("M03", required = setOf(SuiteCapability.AttestedMessageChannel)) {
@@ -789,7 +797,8 @@ internal suspend fun runFullSuite(
             }
             nv.loadHtmlAwaitMarker(expectedMarker = "m03-a", baseUri = "https://main.suite.test/", html = page("m03-a"))
             awaitUntil(10_000, "first request") { replies.size == 1 }
-            // Same origin, fresh document: its first request reuses id 1 on Windows.
+            // Same origin ("null" on Windows, where loadHtml uses a data: URL), fresh document: its first
+            // request reuses id 1 on Windows.
             nv.loadHtmlAwaitMarker(expectedMarker = "m03-b", baseUri = "https://main.suite.test/", html = page("m03-b"))
             awaitUntil(10_000, "second request") { replies.size == 2 }
             replies[0]("stale")
@@ -846,14 +855,26 @@ internal suspend fun runFullSuite(
                     try { window.suiteChan = { postMessage: function () { return Promise.resolve('fake'); } }; } catch (e) {}
                     try { Object.defineProperty(window, 'suiteChan', { value: 1 }); } catch (e) {}
                     try { window.suiteChan.postMessage = function () { return Promise.resolve('fake'); }; } catch (e) {}
+                    // The Windows reply resolver: replace, redefine and delete it (a replaced resolver would
+                    // swallow the real reply), then call it with a forged document token for the pending
+                    // request (id 1). macOS has no resolver; there these only touch a page global.
+                    var rn = '__nucleusChannelResolve_suiteChan';
+                    var resolver = window[rn];
+                    var swallow = function () {};
+                    try { window[rn] = swallow; } catch (e) {}
+                    try { Object.defineProperty(window, rn, { value: swallow }); } catch (e) {}
+                    try { delete window[rn]; } catch (e) {}
                     window.suiteChan.postMessage('x').then(function (r) { window.__m06 = r; });
+                    try { if (typeof resolver === 'function') { resolver('forged-token', 1, 'forged'); } } catch (e) {}
                 </script></body></html>""",
             )
             awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("String(window.__m06)") != "undefined" }
-            assertThat(nv.evalJsUnquotedAsync("String(window.__m06)") == "real", "page replaced the channel")
+            assertThat(nv.evalJsUnquotedAsync("String(window.__m06)") == "real", "page replaced the channel: ${nv.evalJsUnquotedAsync("String(window.__m06)")}")
         }
     }
-    case("D01", required = setOf(SuiteCapability.DesktopNativeControls)) {
+
+    // ── Desktop safety defaults ──────────────────────────────────────
+    case("D01", required = setOf(SuiteCapability.DesktopSafetyDefaults)) {
         loadHtmlAwaitMarker(ctx.navigator, "d01", pageWithMarker("d01"))
         // Engines defer getUserMedia for a hidden document, so an occluded window
         // never reaches the permission decision.
@@ -884,13 +905,48 @@ internal suspend fun runFullSuite(
         if (result.startsWith("skip:")) skipCase(result.removePrefix("skip:"))
         assertThat(result == "rejected:NotAllowedError", "camera: $result")
     }
-    case("D02", required = setOf(SuiteCapability.DesktopNativeControls)) {
-        loadHtmlAwaitMarker(ctx.navigator, "p02", pageWithMarker("p02"))
-        evalJs(ctx.navigator, "window.open('about:blank#popup-p02', '_blank'); 'x'")
-        awaitUntil(10_000, "same-view navigation") {
-            evalJsUnquoted(ctx.navigator, "location.href").contains("popup-p02")
+    case("D02", required = setOf(SuiteCapability.DesktopSafetyDefaults, SuiteCapability.DataUrlNavigation)) {
+        // The interceptor rewrites the popup URL to a data: page, so the case needs no network.
+        ctx.setModifyMap(mapOf("popup-d02.suite.test" to dataHtmlUrl(pageWithMarker("popup-d02"))))
+        try {
+            loadHtmlAwaitMarker(ctx.navigator, "d02", pageWithMarker("d02"))
+            evalJs(ctx.navigator, "window.open('https://popup-d02.suite.test/', '_blank'); 'x'")
+            awaitUntil(10_000, "same-view navigation") { markerOf(ctx.navigator) == "popup-d02" }
+        } finally {
+            ctx.setModifyMap(emptyMap())
         }
     }
+    case("D03", required = setOf(SuiteCapability.DesktopSafetyDefaults, SuiteCapability.DataUrlNavigation)) {
+        // Rewritten to a data: page so an honoured popup would visibly replace the top document.
+        ctx.setModifyMap(mapOf("example.invalid/d03" to dataHtmlUrl(pageWithMarker("d03-popped"))))
+        try {
+            // A cross-origin frame calls window.open without a user gesture, then tells the top page
+            // it did, so the case cannot pass because the frame never executed.
+            val frame = "<script>" +
+                "try{window.open('https://example.invalid/d03')}catch(e){}" +
+                "parent.postMessage('d03-opened','*');" +
+                "</script>"
+            loadHtmlAwaitMarker(
+                ctx.navigator,
+                "d03",
+                """<html><body><div id="marker">d03</div><script>
+                    window.addEventListener('message', function (e) { if (e.data === 'd03-opened') { document.__d03 = 'opened'; } });
+                    </script><iframe src="data:text/html,${frame.encodeURLComponentForSuite()}"></iframe></body></html>""",
+            )
+            awaitUntil(10_000, "frame called window.open") { evalJsUnquoted(ctx.navigator, "document.__d03 || ''") == "opened" }
+            delay(2_000)
+            val marker = markerOf(ctx.navigator)
+            assertThat(marker == "d03", "an iframe's window.open navigated the top view: marker=$marker")
+        } finally {
+            ctx.setModifyMap(emptyMap())
+        }
+    }
+
+    // ── Rendering ────────────────────────────────────────────────────
+    // The WebView is a real native view (no offscreen rendering, no frame
+    // pacing in this library), so these publish what the host reaches — a
+    // healthy value is the display refresh rate. They only fail when the
+    // page is not animating at all.
     measured("R01") {
         loadHtmlAwaitMarker(ctx.navigator, "raf-probe", pageFrameRate())
         // First second primes window.__fps, the second one is the sample.
