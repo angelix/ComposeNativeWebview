@@ -774,7 +774,7 @@ internal suspend fun runFullSuite(
         withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
             val page = { tag: String ->
                 """<html><body><div id="marker">$tag</div><script>
-                    window.suiteChan.postMessage('$tag').then(function (r) { window.__m03 = r; });
+                    window.suiteChan.postMessage('$tag').then(function (r) { document.__m03 = r; });
                 </script></body></html>"""
             }
             nv.loadHtmlAwaitMarker(expectedMarker = "m03-a", baseUri = "https://main.suite.test/", html = page("m03-a"))
@@ -784,9 +784,9 @@ internal suspend fun runFullSuite(
             awaitUntil(10_000, "second request") { replies.size == 2 }
             replies[0]("stale")
             delay(1_000)
-            assertThat(nv.evalJsUnquotedAsync("String(window.__m03)") == "undefined", "stale reply resolved the new document")
+            assertThat(nv.evalJsUnquotedAsync("String(document.__m03)") == "undefined", "stale reply resolved the new document")
             replies[1]("fresh")
-            awaitUntil(10_000, "fresh reply") { nv.evalJsUnquotedAsync("String(window.__m03)") == "fresh" }
+            awaitUntil(10_000, "fresh reply") { nv.evalJsUnquotedAsync("String(document.__m03)") == "fresh" }
         }
     }
     case("M06", required = setOf(SuiteCapability.AttestedMessageChannel)) {
