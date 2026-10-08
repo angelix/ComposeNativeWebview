@@ -31,24 +31,45 @@ class AttestedChannelScriptsTest {
     }
 
     @Test
+    fun originOf_failsClosedOnAmbiguousAuthorities() {
+        for (url in listOf(
+            "https://evil.example\\@good.example/",
+            "https://a@evil@good.example/",
+            "https://a.example\\b/",
+            "https://a .example/",
+            "https://a.example\t/",
+            "https://a.example\u0000/",
+            "https://a.example:abc/",
+            "https://a.example:/",
+            "https://[::1]:x/",
+            "https://:443/",
+        )) {
+            assertEquals("null", AttestedChannelScripts.originOf(url), url)
+        }
+    }
+
+    @Test
     fun parseWindowsEnvelope_acceptsOnlyThisChannelsWellFormedMessages() {
-        val ok = """{"__nucleusChannel":"wallet","id":7,"body":"{\"r\":1}"}"""
-        assertEquals(WindowsEnvelope(7, """{"r":1}"""), AttestedChannelScripts.parseWindowsEnvelope(ok, "wallet"))
+        val ok = """{"__nucleusChannel":"wallet","doc":"d0c","id":7,"body":"{\"r\":1}"}"""
+        assertEquals(WindowsEnvelope(7, """{"r":1}""", "d0c"), AttestedChannelScripts.parseWindowsEnvelope(ok, "wallet"))
         assertNull(AttestedChannelScripts.parseWindowsEnvelope(ok, "other"), "wrong channel")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","body":"x"}""", "wallet"), "no id")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","id":1,"body":5}""", "wallet"), "body not a string")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","id":"1","body":"x"}""", "wallet"), "id not a number")
+        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"d","body":"x"}""", "wallet"), "no id")
+        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"d","id":1,"body":5}""", "wallet"), "body not a string")
+        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"d","id":"1","body":"x"}""", "wallet"), "id not a number")
+        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","id":1,"body":"x"}""", "wallet"), "no doc")
+        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":5,"id":1,"body":"x"}""", "wallet"), "doc not a string")
+        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"","id":1,"body":"x"}""", "wallet"), "empty doc")
         assertNull(AttestedChannelScripts.parseWindowsEnvelope("not json", "wallet"))
         assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"type":"bridge"}""", "wallet"), "untagged traffic stays on ipc")
     }
 
     @Test
     fun windowsReplyScript_guardsOnOriginAndEmbedsValuesAsJsonLiterals() {
-        val script = AttestedChannelScripts.windowsReplyScript("wallet", "https://dapp.example", 3, "a\"b</script>")
+        val script = AttestedChannelScripts.windowsReplyScript("wallet", "https://dapp.example", "tok\"en", 3, "a\"b</script>")
         assertTrue("location.origin !== \"https://dapp.example\"" in script, script)
         assertTrue(AttestedChannelScripts.resolverName("wallet") in script)
         assertTrue("\"a\\\"b<\\/script>\"" in script, "payload is a JSON string literal: $script")
-        assertTrue("(3," in script || "(3 ," in script)
+        assertTrue("(\"tok\\\"en\", 3, " in script, "resolver called with (document, id, payload): $script")
     }
 
     @Test
@@ -63,6 +84,9 @@ class AttestedChannelScriptsTest {
         assertTrue("window.webkit.messageHandlers[\"wallet\"]" in AttestedChannelScripts.macosShim("wallet"))
         assertTrue("__nucleusChannel" in AttestedChannelScripts.windowsShim("wallet"))
         assertTrue(AttestedChannelScripts.resolverName("wallet") in AttestedChannelScripts.windowsShim("wallet"))
+        val windows = AttestedChannelScripts.windowsShim("wallet")
+        assertTrue("crypto.getRandomValues" in windows, "per-document token")
+        assertTrue("doc === " in windows, "resolver checks the document token")
     }
 
     @Test
