@@ -20,7 +20,6 @@
 @property (nonatomic, assign) jlong handle;
 @property (nonatomic, copy) NSString *channelName;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, void (^)(id, NSString *)> *pendingReplies;
-@property (nonatomic, assign) jlong nextReplyId;
 - (void)teardown;
 @end
 
@@ -41,6 +40,8 @@ jmethodID compose_webview_on_screenshot(void);
 
 NSString *compose_webview_jstring_to_ns(JNIEnv *env, jstring js);
 jstring compose_webview_ns_to_jstring(JNIEnv *env, NSString *s);
+jstring compose_webview_utf16_to_jstring(JNIEnv *env, NSString *s);
+NSString *compose_webview_jstring_to_utf16(JNIEnv *env, jstring js);
 NSString *compose_webview_json_escape(NSString *raw);
 
 void compose_webview_deliver_js_result(jlong handle, NSString *payload);

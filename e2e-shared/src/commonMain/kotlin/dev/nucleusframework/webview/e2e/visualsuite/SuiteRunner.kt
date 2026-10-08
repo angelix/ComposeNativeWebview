@@ -735,12 +735,14 @@ internal suspend fun runFullSuite(
                 expectedMarker = "m01-ready",
                 baseUri = "https://main.suite.test/",
                 html = """<html><body><div id="marker">m01-ready</div><script>
-                    window.suiteChan.postMessage('hi').then(function (r) { window.__m01 = r; });
+                    // U+1F98A (a non-BMP character) followed by text that must survive the round trip.
+                    var body = 'hi\uD83E\uDD8Axyz';
+                    window.suiteChan.postMessage(body).then(function (r) { window.__m01 = (r === 'pong:' + body) ? 'ok' : 'bad:' + r.length; });
                 </script></body></html>""",
             )
-            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("window.__m01 || ''") == "pong:hi" }
+            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("window.__m01 || ''") == "ok" }
             val msg = received.single()
-            assertThat(msg.body == "hi", "body=${msg.body}")
+            assertThat(msg.body == "hi\uD83E\uDD8Axyz", "body=${msg.body}")
             assertThat(msg.origin == "https://main.suite.test", "origin=${msg.origin}")
             assertThat(msg.isMainFrame, "main frame not attested")
         }
@@ -764,6 +766,10 @@ internal suspend fun runFullSuite(
             )
             delay(2_000)
             val fromFrame = received.filter { it.body == "from-frame" }
+            assertThat(
+                SuiteCapability.AttestedSubframeDelivery !in caps || fromFrame.isNotEmpty(),
+                "the frame message never arrived, so nothing was attested",
+            )
             assertThat(fromFrame.none { it.isMainFrame }, "a frame message was attested as main frame: $fromFrame")
             assertThat(fromFrame.all { it.origin == "null" }, "a frame message carried a non-opaque origin: $fromFrame")
         }
@@ -787,6 +793,43 @@ internal suspend fun runFullSuite(
             assertThat(nv.evalJsUnquotedAsync("String(document.__m03)") == "undefined", "stale reply resolved the new document")
             replies[1]("fresh")
             awaitUntil(10_000, "fresh reply") { nv.evalJsUnquotedAsync("String(document.__m03)") == "fresh" }
+        }
+    }
+    case("M04", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        // A reply held for a destroyed WebView must not resolve a request of a later WebView, which may
+        // reuse the destroyed one's native memory address.
+        val heldForFirst = mutableListOf<(String) -> Unit>()
+        withIsolatedNativeWebView(
+            parentHandle = ctx.parentHandle,
+            messageChannel = AttestedMessageChannel("suiteChan") { _, reply -> heldForFirst += reply },
+        ) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m04-a",
+                baseUri = "https://first.suite.test/",
+                html = """<html><body><div id="marker">m04-a</div><script>
+                    window.suiteChan.postMessage('first');
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "first request") { heldForFirst.size == 1 }
+        }
+        val heldForSecond = mutableListOf<(String) -> Unit>()
+        withIsolatedNativeWebView(
+            parentHandle = ctx.parentHandle,
+            messageChannel = AttestedMessageChannel("suiteChan") { _, reply -> heldForSecond += reply },
+        ) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m04-b",
+                baseUri = "https://second.suite.test/",
+                html = """<html><body><div id="marker">m04-b</div><script>
+                    window.suiteChan.postMessage('second').then(function (r) { document.__m04 = r; });
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "second request") { heldForSecond.size == 1 }
+            heldForFirst.single()("from-first")
+            delay(1_000)
+            assertThat(nv.evalJsUnquotedAsync("String(document.__m04)") == "undefined", "a reply for a destroyed WebView resolved a later one")
+            heldForSecond.single()("from-second")
+            awaitUntil(10_000, "second reply") { nv.evalJsUnquotedAsync("String(document.__m04)") == "from-second" }
         }
     }
     case("M06", required = setOf(SuiteCapability.AttestedMessageChannel)) {

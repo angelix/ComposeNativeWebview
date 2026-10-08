@@ -75,6 +75,29 @@ jstring compose_webview_ns_to_jstring(JNIEnv *env, NSString *s) {
     return (*env)->NewStringUTF(env, utf);
 }
 
+// UTF-16 conversions keep non-BMP characters and lone surrogates intact; the UTF-8 helpers above
+// go through JNI's modified UTF-8 and cannot.
+jstring compose_webview_utf16_to_jstring(JNIEnv *env, NSString *s) {
+    if (s == nil) return NULL;
+    NSUInteger length = s.length;
+    unichar *buffer = malloc((length > 0 ? length : 1) * sizeof(unichar));
+    if (buffer == NULL) return NULL;
+    [s getCharacters:buffer range:NSMakeRange(0, length)];
+    jstring out = (*env)->NewString(env, (const jchar *)buffer, (jsize)length);
+    free(buffer);
+    return out;
+}
+
+NSString *compose_webview_jstring_to_utf16(JNIEnv *env, jstring js) {
+    if (js == NULL) return nil;
+    const jchar *chars = (*env)->GetStringChars(env, js, NULL);
+    if (chars == NULL) return nil;
+    NSString *out = [NSString stringWithCharacters:(const unichar *)chars
+                                            length:(NSUInteger)(*env)->GetStringLength(env, js)];
+    (*env)->ReleaseStringChars(env, js, chars);
+    return out;
+}
+
 NSString *compose_webview_json_escape(NSString *raw) {
     if (raw == nil) return @"";
     NSMutableString *out = [NSMutableString stringWithCapacity:raw.length + 8];

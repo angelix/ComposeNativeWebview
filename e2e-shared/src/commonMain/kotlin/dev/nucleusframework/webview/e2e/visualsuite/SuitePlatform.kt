@@ -47,6 +47,12 @@ enum class SuiteCapability {
 
     /** Page→host channel with engine-attested origin/frame (desktop macOS + Windows). */
     AttestedMessageChannel,
+
+    /**
+     * Messages posted from a sub-frame reach the channel, attested as not the main frame (macOS).
+     * Without it (Windows) they must never arrive.
+     */
+    AttestedSubframeDelivery,
 }
 
 expect fun suiteCapabilities(): Set<SuiteCapability>

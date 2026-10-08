@@ -1,4 +1,9 @@
 #include "compose_webview_internal.h"
+#include <stdatomic.h>
+
+// Reply ids are unique across every WebView so a reply held for one WebView can never match a request
+// of another that later reuses its state's memory address.
+static _Atomic jlong g_next_reply_id = 0;
 
 @implementation ComposeWebViewState (Signals)
 
@@ -70,11 +75,18 @@
         return;
     }
 
-    jlong replyId = ++self.nextReplyId;
-    self.pendingReplies[@(replyId)] = [replyHandler copy];
+    jstring jorigin = compose_webview_utf16_to_jstring(env, origin);
+    jstring jbody = compose_webview_utf16_to_jstring(env, (NSString *)message.body);
+    if (jorigin == NULL || jbody == NULL) {
+        if (jorigin != NULL) (*env)->DeleteLocalRef(env, jorigin);
+        if (jbody != NULL) (*env)->DeleteLocalRef(env, jbody);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        replyHandler(nil, @"Message could not be delivered");
+        return;
+    }
 
-    jstring jorigin = compose_webview_ns_to_jstring(env, origin);
-    jstring jbody = compose_webview_ns_to_jstring(env, (NSString *)message.body);
+    jlong replyId = atomic_fetch_add(&g_next_reply_id, 1) + 1;
+    self.pendingReplies[@(replyId)] = [replyHandler copy];
     (*env)->CallStaticVoidMethod(
         env, compose_webview_bridge_class(), compose_webview_on_channel_message(),
         self.handle, replyId, jorigin, frame.isMainFrame ? JNI_TRUE : JNI_FALSE, jbody);

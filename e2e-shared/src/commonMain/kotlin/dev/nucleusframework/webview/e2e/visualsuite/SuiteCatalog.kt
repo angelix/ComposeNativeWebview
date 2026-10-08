@@ -90,6 +90,7 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("M01", "Attested channel", "main-frame message carries engine origin; reply resolves"),
         SuiteCase("M02", "Attested channel", "cross-origin iframe is never attested as main frame"),
         SuiteCase("M03", "Attested channel", "stale reply after navigation does not resolve the new document"),
+        SuiteCase("M04", "Attested channel", "reply held for a destroyed WebView does not resolve a later WebView"),
         SuiteCase("M06", "Attested channel", "page cannot replace the channel object"),
         // Rendering — measurements, not thresholds: the backend embeds a real
         // native WebView and never throttles it, so these report what the host

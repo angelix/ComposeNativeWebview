@@ -215,6 +215,11 @@ Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeChannelReply
     void (^reply)(id, NSString *) = state.pendingReplies[key];
     if (reply == nil) return;
     [state.pendingReplies removeObjectForKey:key];
+    NSString *text = compose_webview_jstring_to_utf16(env, payload);
     // WebKit ignores this if the sending document is gone.
-    reply(compose_webview_jstring_to_ns(env, payload) ?: @"", nil);
+    if (text == nil) {
+        reply(nil, @"Reply could not be delivered");
+        return;
+    }
+    reply(text, nil);
 }

@@ -16,7 +16,8 @@ import kotlinx.coroutines.delay
 
 actual fun suiteCapabilities(): Set<SuiteCapability> {
     val os = System.getProperty("os.name", "").lowercase(Locale.ENGLISH)
-    val hasAttestedChannel = os.contains("mac") || os.contains("win")
+    val isMac = os.contains("mac")
+    val hasAttestedChannel = isMac || os.contains("win")
     return setOf(
         SuiteCapability.HistoryNavigation,
         SuiteCapability.DataUrlNavigation,
@@ -26,7 +27,9 @@ actual fun suiteCapabilities(): Set<SuiteCapability> {
         SuiteCapability.IsolatedNativeWebView,
         SuiteCapability.DesktopNativeControls,
         SuiteCapability.DocumentStartJsBridge,
-    ) + if (hasAttestedChannel) setOf(SuiteCapability.AttestedMessageChannel) else emptySet()
+    ) +
+        (if (hasAttestedChannel) setOf(SuiteCapability.AttestedMessageChannel) else emptySet()) +
+        (if (isMac) setOf(SuiteCapability.AttestedSubframeDelivery) else emptySet())
 }
 
 actual fun isPlatformWebViewReady(state: WebViewState): Boolean {
