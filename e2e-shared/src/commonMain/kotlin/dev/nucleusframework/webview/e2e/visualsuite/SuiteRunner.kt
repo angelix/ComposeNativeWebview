@@ -755,7 +755,7 @@ internal suspend fun runFullSuite(
             // parent's frozen object.
             val frame = "<script>" +
                 "try{window.webkit.messageHandlers.suiteChan.postMessage('from-frame')}catch(e){}" +
-                "try{window.chrome.webview.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',id:1,body:'from-frame'}))}catch(e){}" +
+                "try{window.chrome.webview.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',doc:'frame',id:1,body:'from-frame'}))}catch(e){}" +
                 "try{window.parent.suiteChan.postMessage('from-frame')}catch(e){}" +
                 "</script>"
             nv.loadHtmlAwaitMarker(
