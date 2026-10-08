@@ -28,6 +28,11 @@ sealed class PlatformWebSettings {
         var incognito: Boolean = false,
         var autoplayWithoutUserInteraction: Boolean = false,
         var focused: Boolean = true,
+        /**
+         * Optional page→host channel with engine-attested origin and frame (macOS, Windows).
+         * Read when the native view is created.
+         */
+        var messageChannel: dev.nucleusframework.webview.web.AttestedMessageChannel? = null,
     ) : PlatformWebSettings()
 
     data class IOSWebSettings(
