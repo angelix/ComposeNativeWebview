@@ -1035,6 +1035,32 @@ internal suspend fun runFullSuite(
             }
         }
     }
+    case("M09", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("csp-ok") }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            // The page's policy stops its own inline script, as a nonce-based policy stops any script
+            // the site did not sign. The channel is the host's, so it has to be installed regardless.
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m09-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><head>
+                    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'">
+                    </head><body><div id="marker">m09-ready</div><script>
+                    window.__m09pageScriptRan = true;
+                </script></body></html>""",
+            )
+            assertThat(
+                nv.evalJsUnquotedAsync("String(window.__m09pageScriptRan)") == "undefined",
+                "the policy did not stop the page's inline script, so the case proves nothing",
+            )
+            assertThat(nv.evalJsUnquotedAsync("typeof window.suiteChan") == "object", "no channel object on the page")
+            nv.evalJsUnquotedAsync("window.suiteChan.postMessage('csp').then(function (r) { window.__m09 = r; }); 'x'")
+            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("String(window.__m09)") == "csp-ok" }
+            val msg = received.single()
+            assertThat(msg.body == "csp" && msg.isMainFrame, "message=$msg")
+        }
+    }
 
     // ── Desktop safety defaults ──────────────────────────────────────
     case("D01", required = setOf(SuiteCapability.DesktopSafetyDefaults)) {

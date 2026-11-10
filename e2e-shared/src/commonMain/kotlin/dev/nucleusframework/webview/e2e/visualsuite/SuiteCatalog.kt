@@ -96,6 +96,7 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("M06", "Attested channel", "page cannot replace the channel object or its reply resolver"),
         SuiteCase("M07", "Attested channel", "origin is serialised like a browser's; an opaque document is null"),
         SuiteCase("M08", "Attested channel", "a sub-frame load or a navigation inside the page does not cut the channel"),
+        SuiteCase("M09", "Attested channel", "the channel is there on a page whose CSP allows no script of its own"),
         // Desktop safety defaults
         SuiteCase("D01", "Safety", "getUserMedia is denied without a prompt"),
         SuiteCase("D02", "Safety", "main-frame window.open of an https URL loads in the same view"),
