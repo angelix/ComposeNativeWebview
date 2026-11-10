@@ -17,7 +17,7 @@ import kotlinx.coroutines.delay
 actual fun suiteCapabilities(): Set<SuiteCapability> {
     val os = System.getProperty("os.name", "").lowercase(Locale.ENGLISH)
     val isMac = os.contains("mac")
-    val isMacOrWindows = isMac || os.contains("win")
+    val isWindows = os.contains("win")
     return setOf(
         SuiteCapability.HistoryNavigation,
         SuiteCapability.DataUrlNavigation,
@@ -27,21 +27,11 @@ actual fun suiteCapabilities(): Set<SuiteCapability> {
         SuiteCapability.IsolatedNativeWebView,
         SuiteCapability.DesktopNativeControls,
         SuiteCapability.DocumentStartJsBridge,
+        SuiteCapability.AttestedMessageChannel,
     ) +
-        (
-            if (isMacOrWindows) {
-                setOf(SuiteCapability.AttestedMessageChannel, SuiteCapability.DesktopSafetyDefaults)
-            } else {
-                emptySet()
-            }
-        ) +
-        (
-            if (isMac) {
-                setOf(SuiteCapability.AttestedSubframeDelivery, SuiteCapability.LoadHtmlBaseUriOrigin)
-            } else {
-                emptySet()
-            }
-        )
+        (if (isMac || isWindows) setOf(SuiteCapability.DesktopSafetyDefaults) else emptySet()) +
+        (if (isMac) setOf(SuiteCapability.AttestedSubframeDelivery) else emptySet()) +
+        (if (!isWindows) setOf(SuiteCapability.LoadHtmlBaseUriOrigin) else emptySet())
 }
 
 actual fun isPlatformWebViewReady(state: WebViewState): Boolean {
@@ -86,6 +76,7 @@ actual suspend fun withIsolatedNativeWebView(
                     zoomLevel = 1.0,
                     transparent = false,
                     backgroundColor = Color.White,
+                    messageChannel = messageChannel,
                 )
             isMac ->
                 MacOsWebKitNativeWebView(

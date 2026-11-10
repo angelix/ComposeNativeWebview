@@ -90,6 +90,7 @@ actual fun defaultWebViewFactory(param: WebViewFactoryParam): NativeWebView {
             zoomLevel = settings.zoomLevel,
             transparent = desktop.transparent,
             backgroundColor = background,
+            messageChannel = desktop.messageChannel,
         )
     }
 

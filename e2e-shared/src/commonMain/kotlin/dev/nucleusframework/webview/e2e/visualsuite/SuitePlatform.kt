@@ -45,18 +45,18 @@ enum class SuiteCapability {
      */
     DocumentStartJsBridge,
 
-    /** Page→host channel with engine-attested origin/frame (desktop macOS + Windows). */
+    /** Page→host channel with engine-attested origin/frame (desktop). */
     AttestedMessageChannel,
 
     /**
      * Messages posted from a sub-frame reach the channel, attested as not the main frame (macOS).
-     * Without it (Windows) they must never arrive.
+     * Without it (Windows, Linux) they must never arrive.
      */
     AttestedSubframeDelivery,
 
     /**
-     * `loadHtml(html, baseUri)` gives the document the base URI's origin (macOS). Without it
-     * (Windows) the HTML loads as a `data:` document whose origin is "null".
+     * `loadHtml(html, baseUri)` gives the document the base URI's origin (macOS, Linux). Without
+     * it (Windows) the HTML loads as a `data:` document whose origin is "null".
      */
     LoadHtmlBaseUriOrigin,
 

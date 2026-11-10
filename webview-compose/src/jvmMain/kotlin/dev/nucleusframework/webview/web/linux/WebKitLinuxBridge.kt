@@ -1,10 +1,19 @@
 package dev.nucleusframework.webview.web.linux
 
 import dev.nucleusframework.core.runtime.NativeLibraryLoader
+import dev.nucleusframework.webview.util.KLogger
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessage
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * JNI bridge to `compose_webview.c` (WebKit2GTK).
@@ -14,6 +23,7 @@ import kotlinx.coroutines.CompletableDeferred
  */
 internal object WebKitLinuxBridge {
     private const val LIBRARY_NAME = "compose_webview_linux"
+    private const val LOG_TAG = "WebKitLinuxBridge"
 
     val isLoaded: Boolean =
         NativeLibraryLoader.load(
@@ -33,6 +43,15 @@ internal object WebKitLinuxBridge {
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<ByteArray?>>>()
 
     private val requestIds = AtomicLong(1)
+
+    private val channels = ConcurrentHashMap<Long, AttestedMessageChannel>()
+
+    // Replies run native calls, which must happen on the GTK main thread (the Tao event loop).
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    fun registerChannel(handle: Long, channel: AttestedMessageChannel) {
+        channels[handle] = channel
+    }
 
     fun addNavigateListener(handle: Long, listener: (String) -> Boolean) {
         navigateHandlers.getOrPut(handle) { mutableListOf() }.add(listener)
@@ -66,6 +85,7 @@ internal object WebKitLinuxBridge {
 
     fun clearHandle(handle: Long) {
         navigateHandlers.remove(handle)
+        channels.remove(handle)
         ipcQueues.remove(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
@@ -89,6 +109,39 @@ internal object WebKitLinuxBridge {
     @JvmStatic
     fun nativeOnIpcMessage(handle: Long, message: String) {
         ipcQueues.getOrPut(handle) { ConcurrentLinkedQueue() }.add(message)
+    }
+
+    /**
+     * A message on the attested channel, as the relay script in the channel's script world
+     * enveloped it. The page cannot reach that handler, so the envelope's origin and frame are the
+     * relay's own reading of the document it runs in.
+     */
+    @JvmStatic
+    fun nativeOnChannelMessage(handle: Long, replyId: Long, raw: String) {
+        val channel = channels[handle]
+        val envelope = AttestedChannelScripts.parseLinuxEnvelope(raw)
+        if (channel == null || envelope == null) {
+            KLogger.w(tag = LOG_TAG) { "channel message for handle $handle could not be delivered" }
+            nativeChannelReply(handle, replyId, null)
+            return
+        }
+        val message =
+            AttestedMessage(
+                body = envelope.body,
+                origin = AttestedChannelScripts.originOf(envelope.origin),
+                isMainFrame = envelope.isMainFrame,
+            )
+        val replied = AtomicBoolean(false)
+        try {
+            channel.onMessage(message) { payload ->
+                if (!replied.compareAndSet(false, true)) return@onMessage
+                mainScope.launch {
+                    if (channels.containsKey(handle)) nativeChannelReply(handle, replyId, payload)
+                }
+            }
+        } catch (t: Throwable) {
+            KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
+        }
     }
 
     @JvmStatic
@@ -123,7 +176,15 @@ internal object WebKitLinuxBridge {
         bgG: Float,
         bgB: Float,
         bgA: Float,
+        channelName: String?,
+        channelWorld: String?,
+        channelRelay: String?,
+        channelShim: String?,
     ): Long
+
+    /** Resolves the page's promise for [replyId] with [payload], or rejects it when null. */
+    @JvmStatic
+    external fun nativeChannelReply(handle: Long, replyId: Long, payload: String?)
 
     @JvmStatic
     external fun nativeGetGtkWidget(handle: Long): Long

@@ -2,6 +2,8 @@ package dev.nucleusframework.webview.web.linux
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.NativeWebView
 import dev.nucleusframework.window.tao.NucleusPlatformView
 import kotlinx.coroutines.CompletableDeferred
@@ -24,6 +26,7 @@ class LinuxWebKitNativeWebView(
     zoomLevel: Double = 1.0,
     transparent: Boolean = false,
     backgroundColor: Color = Color.White,
+    messageChannel: AttestedMessageChannel? = null,
 ) : NativeWebView() {
     private val handle: Long
     private val gtkWidgetHandle: Long
@@ -61,8 +64,13 @@ class LinuxWebKitNativeWebView(
             bgG = g,
             bgB = b,
             bgA = a,
+            channelName = messageChannel?.name,
+            channelWorld = messageChannel?.let { AttestedChannelScripts.LINUX_WORLD },
+            channelRelay = messageChannel?.let { AttestedChannelScripts.linuxRelay(it.name) },
+            channelShim = messageChannel?.let { AttestedChannelScripts.linuxShim(it.name) },
         )
         require(handle != 0L) { "Failed to create WebKitWebView" }
+        messageChannel?.let { WebKitLinuxBridge.registerChannel(handle, it) }
         gtkWidgetHandle = WebKitLinuxBridge.nativeGetGtkWidget(handle)
         require(gtkWidgetHandle != 0L) { "Failed to get GtkWidget handle" }
     }

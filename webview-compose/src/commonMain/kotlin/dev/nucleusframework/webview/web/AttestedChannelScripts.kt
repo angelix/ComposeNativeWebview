@@ -1,20 +1,36 @@
 // Page-side shims and host-side helpers behind AttestedMessageChannel: origin serialisation,
-// the document-start scripts for macOS and Windows, and the Windows message envelope codec.
+// the document-start scripts for macOS, Windows and Linux, and the Windows and Linux message
+// envelope codecs.
 // Pure functions so the native backends stay thin and this logic is unit-testable in commonTest.
 package dev.nucleusframework.webview.web
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 
 internal data class WindowsEnvelope(val id: Long, val body: String, val document: String)
 
+/** What the Linux relay script reports about the document it runs in, with the page's message. */
+internal data class LinuxEnvelope(val origin: String, val isMainFrame: Boolean, val body: String)
+
 /** Page-side shims and host-side helpers for [AttestedMessageChannel]. Pure; unit-tested. */
 internal object AttestedChannelScripts {
 
     private const val CHANNEL_TAG = "__nucleusChannel"
+
+    /**
+     * The WebKitGTK script world the Linux relay runs in. A script world shares the page's DOM but
+     * none of its JavaScript objects, so the page can neither reach the message handler registered
+     * there nor change what the relay reads.
+     */
+    const val LINUX_WORLD = "nucleusAttestedChannel"
+
+    fun linuxHelloEvent(channel: String): String = "__nucleusChannelHello_$channel"
+
+    fun linuxRelayEvent(channel: String): String = "__nucleusChannelRelay_$channel"
 
     fun resolverName(channel: String): String = "__nucleusChannelResolve_$channel"
 
@@ -100,6 +116,124 @@ internal object AttestedChannelScripts {
           });
         })();
     """.trimIndent()
+
+    /**
+     * Linux, page side. WebKitGTK tells the host nothing about who sent a script message, so the
+     * page's messages go through [linuxRelay], which runs in its own script world and reports the
+     * document it runs in. The two halves talk over a pipe: an event target the shim creates and
+     * hands over as the `relatedTarget` of a hello event on `window`, which the relay's world
+     * receives as that same object. WebKit starts the two scripts in either order, both before any
+     * page script, so the shim offers the pipe when it starts and when the relay announces itself,
+     * and never again once a relay has taken it. No page script ever holds the pipe, so none can
+     * listen on it, send a request on it, or forge a reply.
+     *
+     * The pipe is part of no document: `document.open()`, which removes every listener on `window`
+     * and in the document, leaves both ends of it listening.
+     */
+    fun linuxShim(channel: String): String = """
+        (function () {
+          if (window.top !== window) { return; }
+          if (Object.prototype.hasOwnProperty.call(window, ${js(channel)})) { return; }
+          var dispatch = window.dispatchEvent.bind(window);
+          var listen = window.addEventListener.bind(window);
+          var Event = window.CustomEvent;
+          var Hello = window.FocusEvent;
+          var detailOf = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(Event.prototype, "detail").get);
+          var stringify = JSON.stringify;
+          var parse = JSON.parse;
+          var pipe = new EventTarget();
+          var send = pipe.dispatchEvent.bind(pipe);
+          var taken = false;
+          var queued = [];
+          var pending = Object.create(null);
+          var next = 1;
+          function request(id, body) {
+            send(new Event("request", { detail: stringify({ id: id, body: body }) }));
+          }
+          function offer() {
+            if (taken) { return; }
+            taken = !dispatch(new Hello(${js(linuxHelloEvent(channel))}, { cancelable: true, relatedTarget: pipe }));
+            if (!taken) { return; }
+            var waiting = queued;
+            queued = [];
+            for (var i = 0; i < waiting.length; i++) { request(waiting[i][0], waiting[i][1]); }
+          }
+          pipe.addEventListener("reply", function (e) {
+            var m;
+            try { m = parse(detailOf(e)); } catch (x) { return; }
+            var p = m && pending[m.id];
+            if (!p) { return; }
+            delete pending[m.id];
+            if (m.ok === true) { p[0](m.value); } else { p[1](new Error(String(m.value))); }
+          });
+          listen(${js(linuxRelayEvent(channel))}, function (e) {
+            e.stopImmediatePropagation();
+            offer();
+          }, true);
+          Object.defineProperty(window, ${js(channel)}, {
+            value: Object.freeze({
+              postMessage: function (body) {
+                return new Promise(function (resolve, reject) {
+                  var id = next++;
+                  var text = String(body);
+                  pending[id] = [resolve, reject];
+                  if (taken) { request(id, text); } else { queued.push([id, text]); }
+                });
+              }
+            }),
+            writable: false, configurable: false, enumerable: false
+          });
+          offer();
+        })();
+    """.trimIndent()
+
+    /**
+     * Linux, relay side: runs in the [LINUX_WORLD] script world of the top frame, where the
+     * with-reply message handler is registered. It takes the first pipe a hello offers it, cancels
+     * that hello to tell the shim so, and from then on listens on the pipe alone. It stamps every
+     * message with `window.origin` and whether its window is the top one, both read through this
+     * world's own bindings. The handler's promise belongs to this document, so WebKit never
+     * delivers a reply to a later one.
+     */
+    fun linuxRelay(channel: String): String = """
+        (function () {
+          var handlers = window.webkit && window.webkit.messageHandlers;
+          var h = handlers && handlers[${js(channel)}];
+          if (!h) { return; }
+          var post = h.postMessage.bind(h);
+          var pipe = null;
+          window.addEventListener(${js(linuxHelloEvent(channel))}, function (e) {
+            e.stopImmediatePropagation();
+            if (pipe !== null || !e.relatedTarget) { return; }
+            pipe = e.relatedTarget;
+            e.preventDefault();
+            pipe.addEventListener("request", function (r) {
+              var m;
+              try { m = JSON.parse(r.detail); } catch (x) { return; }
+              if (!m || typeof m.id !== "number" || typeof m.body !== "string") { return; }
+              var id = m.id;
+              function settle(ok, value) {
+                pipe.dispatchEvent(new CustomEvent("reply", { detail: JSON.stringify({ id: id, ok: ok, value: value }) }));
+              }
+              post(JSON.stringify({ origin: window.origin, isMainFrame: window.top === window, body: m.body })).then(
+                function (reply) {
+                  if (typeof reply === "string") { settle(true, reply); } else { settle(false, "No reply"); }
+                },
+                function (error) { settle(false, String((error && error.message) || error)); });
+            });
+          }, true);
+          window.dispatchEvent(new CustomEvent(${js(linuxRelayEvent(channel))}));
+        })();
+    """.trimIndent()
+
+    /** The relay's message to the host. Only [linuxRelay] can reach the handler it arrives on. */
+    fun parseLinuxEnvelope(raw: String): LinuxEnvelope? {
+        val obj = runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
+        val origin = (obj["origin"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return null
+        val isMainFrame = (obj["isMainFrame"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: return null
+        val body = (obj["body"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return null
+        return LinuxEnvelope(origin, isMainFrame, body)
+    }
 
     fun parseWindowsEnvelope(raw: String, channel: String): WindowsEnvelope? {
         val obj = runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null

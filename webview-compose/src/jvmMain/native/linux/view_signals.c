@@ -99,3 +99,58 @@ void compose_webview_on_script_message(
     }
     g_free(message);
 }
+
+/* Reply ids are unique across every WebView, so a reply held for one WebView can never match a
+ * request of another that later reuses its state's memory address. GTK main thread only. */
+static gint64 g_next_reply_id = 0;
+
+/*
+ * A message on the attested channel. Only the relay script in the channel's script world can reach
+ * this handler; `value` is its envelope (origin, main frame or not, and the page's body), which the
+ * Kotlin side decodes. The reply object is kept until the host answers: WebKit resolves the relay's
+ * promise with it, in the document that sent the message and no other.
+ */
+gboolean compose_webview_on_channel_script_message(
+    WebKitUserContentManager *manager,
+    JSCValue *value,
+    WebKitScriptMessageReply *reply,
+    gpointer user_data)
+{
+    (void) manager;
+    ComposeWebViewState *state = (ComposeWebViewState *) user_data;
+    if (state == NULL || state->pending_replies == NULL ||
+        value == NULL || !JSC_IS_VALUE(value) || !jsc_value_is_string(value)) {
+        webkit_script_message_reply_return_error_message(reply, "Unsupported message");
+        return TRUE;
+    }
+
+    JNIEnv *env = compose_webview_get_env();
+    if (env != NULL) compose_webview_ensure_bridge_methods(env);
+    if (env == NULL || compose_webview_bridge_class() == NULL ||
+        compose_webview_on_channel_message() == NULL) {
+        webkit_script_message_reply_return_error_message(reply, "Host unavailable");
+        return TRUE;
+    }
+
+    gchar *envelope = jsc_value_to_string(value);
+    jstring jenvelope = compose_webview_utf8_to_jstring(env, envelope);
+    g_free(envelope);
+    if (jenvelope == NULL) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        webkit_script_message_reply_return_error_message(reply, "Message could not be delivered");
+        return TRUE;
+    }
+
+    /* The host may answer before the call below returns, which removes the entry and frees its key. */
+    gint64 reply_id = ++g_next_reply_id;
+    gint64 *key = g_new(gint64, 1);
+    *key = reply_id;
+    g_hash_table_insert(state->pending_replies, key, webkit_script_message_reply_ref(reply));
+
+    (*env)->CallStaticVoidMethod(
+        env, compose_webview_bridge_class(), compose_webview_on_channel_message(),
+        (jlong) (uintptr_t) state, (jlong) reply_id, jenvelope);
+    (*env)->DeleteLocalRef(env, jenvelope);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    return TRUE;
+}

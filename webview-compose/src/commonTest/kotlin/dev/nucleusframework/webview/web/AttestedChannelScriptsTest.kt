@@ -94,6 +94,85 @@ class AttestedChannelScriptsTest {
     }
 
     @Test
+    fun parseLinuxEnvelope_acceptsOnlyWellFormedRelayMessages() {
+        val ok = """{"origin":"https://dapp.example","isMainFrame":true,"body":"{\"r\":1}"}"""
+        assertEquals(
+            LinuxEnvelope("https://dapp.example", true, """{"r":1}"""),
+            AttestedChannelScripts.parseLinuxEnvelope(ok),
+        )
+        assertEquals(
+            LinuxEnvelope("null", false, ""),
+            AttestedChannelScripts.parseLinuxEnvelope("""{"origin":"null","isMainFrame":false,"body":""}"""),
+        )
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("""{"isMainFrame":true,"body":"x"}"""), "no origin")
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("""{"origin":5,"isMainFrame":true,"body":"x"}"""), "origin not a string")
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("""{"origin":"null","body":"x"}"""), "no isMainFrame")
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("""{"origin":"null","isMainFrame":"true","body":"x"}"""), "isMainFrame not a boolean")
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("""{"origin":"null","isMainFrame":1,"body":"x"}"""), "isMainFrame not a boolean")
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("""{"origin":"null","isMainFrame":true}"""), "no body")
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("""{"origin":"null","isMainFrame":true,"body":5}"""), "body not a string")
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("not json"))
+        assertNull(AttestedChannelScripts.parseLinuxEnvelope("\"a string\""))
+    }
+
+    @Test
+    fun linuxEnvelope_keepsTextOutsideTheBasicPlane() {
+        val raw = """{"origin":"null","isMainFrame":true,"body":"hi\uD83E\uDD8Axyz"}"""
+        assertEquals("hi\uD83E\uDD8Axyz", AttestedChannelScripts.parseLinuxEnvelope(raw)?.body)
+    }
+
+    @Test
+    fun linuxShim_installsAFrozenTopFrameOnlyObjectThatTalksToTheRelay() {
+        val shim = AttestedChannelScripts.linuxShim("wallet")
+        assertTrue("window.top !== window" in shim, "top frame only")
+        assertTrue("Object.defineProperty(window, \"wallet\"" in shim)
+        assertTrue("Object.freeze(" in shim)
+        assertFalse("writable: true" in shim)
+        assertFalse("configurable: true" in shim)
+        assertFalse("window.webkit" in shim, "the page world has no handler to call")
+        for (event in listOf(
+            AttestedChannelScripts.linuxHelloEvent("wallet"),
+            AttestedChannelScripts.linuxRelayEvent("wallet"),
+        )) {
+            assertTrue("\"$event\"" in shim, "shim uses $event")
+        }
+        assertTrue("window.dispatchEvent.bind(window)" in shim, "dispatchEvent is captured before page scripts run")
+        assertTrue("var pipe = new EventTarget();" in shim, "the pipe is an object no document holds")
+        assertTrue("relatedTarget: pipe" in shim, "the hello hands the pipe to the relay")
+        assertTrue("if (taken) { return; }" in shim, "a pipe a relay has taken is not offered again")
+        assertTrue("pipe.dispatchEvent.bind(pipe)" in shim, "requests leave on the pipe")
+        assertTrue("pipe.addEventListener(\"reply\"" in shim, "replies arrive on the pipe")
+        assertFalse("listen(\"reply\"" in shim, "no reply is taken from window, where a page script can dispatch one")
+        assertEquals(1, Regex("stopImmediatePropagation\\(\\)").findAll(shim).count(), "the relay's announcement stops at the shim")
+    }
+
+    @Test
+    fun linuxRelay_stampsTheSenderItselfAndTakesRequestsFromItsPipeOnly() {
+        val relay = AttestedChannelScripts.linuxRelay("wallet")
+        assertTrue("handlers[\"wallet\"]" in relay)
+        assertTrue("h.postMessage.bind(h)" in relay, "the handler is captured when the relay starts")
+        assertTrue("origin: window.origin" in relay, "origin read in the relay's own world")
+        assertTrue("isMainFrame: window.top === window" in relay, "frame read in the relay's own world")
+        assertTrue("\"${AttestedChannelScripts.linuxHelloEvent("wallet")}\"" in relay, "the relay waits for the shim's hello")
+        assertTrue("\"${AttestedChannelScripts.linuxRelayEvent("wallet")}\"" in relay, "the relay announces itself to a shim that started first")
+        assertTrue("if (pipe !== null || !e.relatedTarget) { return; }" in relay, "the first pipe is the only one")
+        assertTrue("e.preventDefault();" in relay, "the relay tells the shim it took the pipe by cancelling the hello")
+        assertTrue("pipe.addEventListener(\"request\"" in relay, "requests are taken from the pipe")
+        assertFalse("window.addEventListener(\"request\"" in relay, "no request is taken from window")
+        assertTrue("typeof m.body !== \"string\"" in relay)
+        assertEquals(1, Regex("stopImmediatePropagation\\(\\)").findAll(relay).count(), "the hello stops at the relay")
+        assertFalse("m.origin" in relay, "nothing the page sends is used as the origin")
+        assertFalse("m.isMainFrame" in relay, "nothing the page sends is used as the frame")
+    }
+
+    @Test
+    fun linuxScripts_embedTheChannelNameAsAJsonLiteral() {
+        val name = "wal\$let"
+        assertTrue("\"wal\$let\"" in AttestedChannelScripts.linuxShim(name))
+        assertTrue("\"__nucleusChannelHello_wal\$let\"" in AttestedChannelScripts.linuxRelay(name))
+    }
+
+    @Test
     fun channelNames_mustBeJsIdentifiers() {
         kotlin.test.assertFailsWith<IllegalArgumentException> { AttestedMessageChannel("bad name") { _, _ -> } }
         kotlin.test.assertFailsWith<IllegalArgumentException> { AttestedMessageChannel("ipc") { _, _ -> } }

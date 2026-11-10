@@ -26,7 +26,11 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeCreate(
     jfloat bg_r,
     jfloat bg_g,
     jfloat bg_b,
-    jfloat bg_a)
+    jfloat bg_a,
+    jstring channel_name,
+    jstring channel_world,
+    jstring channel_relay,
+    jstring channel_shim)
 {
     (void) clazz;
     compose_webview_ensure_bridge_methods(env);
@@ -106,6 +110,56 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeCreate(
         if (bridge_src != NULL) {
             (*env)->ReleaseStringUTFChars(env, js_bridge_script, bridge_src);
         }
+    }
+
+    /*
+     * Attested message channel. WebKitGTK reports nothing about the sender of a script message,
+     * so the handler is registered in a script world of its own, where only the relay script can
+     * call it; the relay runs in the top frame and reports the document it runs in. The page's
+     * side of the channel is installed before any init script, so an init script can use it.
+     */
+    if (channel_name != NULL && channel_world != NULL && channel_relay != NULL && channel_shim != NULL) {
+        const char *name = (*env)->GetStringUTFChars(env, channel_name, NULL);
+        const char *world = (*env)->GetStringUTFChars(env, channel_world, NULL);
+        const char *relay_src = (*env)->GetStringUTFChars(env, channel_relay, NULL);
+        const char *shim_src = (*env)->GetStringUTFChars(env, channel_shim, NULL);
+        if (name != NULL && world != NULL && relay_src != NULL && shim_src != NULL) {
+            state->pending_replies = g_hash_table_new_full(
+                g_int64_hash, g_int64_equal, g_free,
+                (GDestroyNotify) webkit_script_message_reply_unref);
+            state->reply_context = jsc_context_new();
+
+            /* Connect BEFORE register, as for "ipc" above. */
+            gchar *signal = g_strdup_printf("script-message-with-reply-received::%s", name);
+            state->channel_handler = g_signal_connect(
+                state->ucm, signal, G_CALLBACK(compose_webview_on_channel_script_message), state);
+            g_free(signal);
+            webkit_user_content_manager_register_script_message_handler_with_reply(
+                state->ucm, name, world);
+
+            WebKitUserScript *relay = webkit_user_script_new_for_world(
+                relay_src,
+                WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+                world,
+                NULL,
+                NULL);
+            webkit_user_content_manager_add_script(state->ucm, relay);
+            webkit_user_script_unref(relay);
+
+            WebKitUserScript *channel_page_shim = webkit_user_script_new(
+                shim_src,
+                WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+                NULL,
+                NULL);
+            webkit_user_content_manager_add_script(state->ucm, channel_page_shim);
+            webkit_user_script_unref(channel_page_shim);
+        }
+        if (name != NULL) (*env)->ReleaseStringUTFChars(env, channel_name, name);
+        if (world != NULL) (*env)->ReleaseStringUTFChars(env, channel_world, world);
+        if (relay_src != NULL) (*env)->ReleaseStringUTFChars(env, channel_relay, relay_src);
+        if (shim_src != NULL) (*env)->ReleaseStringUTFChars(env, channel_shim, shim_src);
     }
 
     /*
@@ -225,10 +279,30 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRelease(
         g_object_unref(state->web_view);
         state->web_view = NULL;
     }
+    if (state->pending_replies != NULL) {
+        /* Reject what the host never answered; destroying the table drops the reply objects. */
+        GHashTableIter iter;
+        gpointer reply = NULL;
+        g_hash_table_iter_init(&iter, state->pending_replies);
+        while (g_hash_table_iter_next(&iter, NULL, &reply)) {
+            webkit_script_message_reply_return_error_message(
+                (WebKitScriptMessageReply *) reply, "WebView released");
+        }
+        g_hash_table_destroy(state->pending_replies);
+        state->pending_replies = NULL;
+    }
+    if (state->reply_context != NULL) {
+        g_object_unref(state->reply_context);
+        state->reply_context = NULL;
+    }
     if (state->ucm != NULL) {
         if (state->ipc_handler != 0) {
             g_signal_handler_disconnect(state->ucm, state->ipc_handler);
             state->ipc_handler = 0;
+        }
+        if (state->channel_handler != 0) {
+            g_signal_handler_disconnect(state->ucm, state->channel_handler);
+            state->channel_handler = 0;
         }
         g_object_unref(state->ucm);
         state->ucm = NULL;
@@ -240,3 +314,36 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRelease(
     g_free(state);
 }
 
+
+/*
+ * Answers one message on the attested channel. A NULL payload, or one that is not valid UTF-16,
+ * rejects the page's promise. Unknown ids (already answered, or belonging to a released WebView)
+ * are ignored.
+ */
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeChannelReply(
+    JNIEnv *env, jclass clazz, jlong handle, jlong reply_id, jstring payload)
+{
+    (void) clazz;
+    ComposeWebViewState *state = compose_webview_state_from_handle(handle);
+    if (state == NULL || state->pending_replies == NULL) return;
+
+    gint64 key = (gint64) reply_id;
+    gpointer stored_key = NULL;
+    gpointer stored_reply = NULL;
+    if (!g_hash_table_steal_extended(state->pending_replies, &key, &stored_key, &stored_reply)) return;
+    g_free(stored_key);
+    WebKitScriptMessageReply *reply = (WebKitScriptMessageReply *) stored_reply;
+
+    gchar *text = compose_webview_jstring_to_utf8(env, payload);
+    if (text == NULL) {
+        webkit_script_message_reply_return_error_message(
+            reply, payload == NULL ? "Message could not be delivered" : "Reply could not be delivered");
+    } else {
+        JSCValue *value = jsc_value_new_string(state->reply_context, text);
+        webkit_script_message_reply_return_value(reply, value);
+        g_object_unref(value);
+        g_free(text);
+    }
+    webkit_script_message_reply_unref(reply);
+}
