@@ -210,14 +210,16 @@ class LinuxWebKitNativeWebView(
         )
     }
 
-    fun removeAllCookiesNative() {
+    /** Returns once the engine reports the cookies gone. */
+    suspend fun removeAllCookiesNative() {
         if (!isReady()) return
-        WebKitLinuxBridge.nativeRemoveAllCookies(handle)
+        WebKitLinuxBridge.removeAllCookies(handle)
     }
 
-    fun removeCookiesForUrlNative(url: String) {
+    /** Returns once the engine reports the cookies of [url]'s host gone. */
+    suspend fun removeCookiesForUrlNative(url: String) {
         if (!isReady()) return
-        WebKitLinuxBridge.nativeRemoveCookiesForUrl(handle, url)
+        WebKitLinuxBridge.removeCookiesForUrl(handle, url)
     }
 
     fun setZoomLevel(zoom: Double) {

@@ -97,6 +97,7 @@ void compose_webview_call_on_ipc(jlong handle, const std::string &utf8);
 void compose_webview_call_on_sourced_message(jlong handle, jlong generation, const std::wstring &source, const std::wstring &raw);
 bool compose_webview_call_on_navigate(jlong handle, const std::wstring &url);
 void compose_webview_call_on_cookies(jlong handle, const std::string &json);
+void compose_webview_call_on_cookies_removed(jlong requestId);
 void compose_webview_call_on_screenshot(jlong handle, const std::vector<BYTE> *png);
 
 /* helpers (view_lifecycle.cpp) */

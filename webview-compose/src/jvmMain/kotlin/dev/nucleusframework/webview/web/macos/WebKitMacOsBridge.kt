@@ -5,6 +5,7 @@ import dev.nucleusframework.webview.util.KLogger
 import dev.nucleusframework.webview.web.AttestedMessage
 import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.IpcInbox
+import dev.nucleusframework.webview.web.NativeCompletions
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -33,6 +34,7 @@ internal object WebKitMacOsBridge {
     private val navigateHandlers =
         ConcurrentHashMap<Long, MutableList<(String) -> Boolean>>()
     private val ipcInbox = IpcInbox()
+    private val cookieRemovals = NativeCompletions()
     private val jsCallbacks =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<(String) -> Unit>>()
     private val cookieDeferreds =
@@ -62,6 +64,14 @@ internal object WebKitMacOsBridge {
 
     fun drainIpcMessages(handle: Long): List<String> = ipcInbox.drain(handle)
 
+    /** Removes every cookie and returns once the engine reports them gone. */
+    suspend fun removeAllCookies(handle: Long) =
+        cookieRemovals.await(handle) { requestId -> nativeRemoveAllCookies(handle, requestId) }
+
+    /** Removes the cookies of [url]'s host and returns once the engine reports them gone. */
+    suspend fun removeCookiesForUrl(handle: Long, url: String) =
+        cookieRemovals.await(handle) { requestId -> nativeRemoveCookiesForUrl(handle, url, requestId) }
+
     fun registerJsCallback(handle: Long, callback: (String) -> Unit) {
         jsCallbacks.getOrPut(handle) { ConcurrentLinkedQueue() }.add(callback)
     }
@@ -78,6 +88,7 @@ internal object WebKitMacOsBridge {
         navigateHandlers.remove(handle)
         channels.remove(handle)
         ipcInbox.close(handle)
+        cookieRemovals.release(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
             it.complete("[]")
@@ -130,6 +141,12 @@ internal object WebKitMacOsBridge {
     @JvmStatic
     fun nativeOnCookiesResult(handle: Long, json: String) {
         cookieDeferreds[handle]?.poll()?.complete(json)
+    }
+
+    /** The removal started with [requestId] has finished (or could not be started). */
+    @JvmStatic
+    fun nativeOnCookiesRemoved(requestId: Long) {
+        cookieRemovals.complete(requestId)
     }
 
     @JvmStatic
@@ -240,10 +257,10 @@ internal object WebKitMacOsBridge {
     )
 
     @JvmStatic
-    external fun nativeRemoveAllCookies(handle: Long)
+    external fun nativeRemoveAllCookies(handle: Long, requestId: Long)
 
     @JvmStatic
-    external fun nativeRemoveCookiesForUrl(handle: Long, url: String)
+    external fun nativeRemoveCookiesForUrl(handle: Long, url: String, requestId: Long)
 
     @JvmStatic
     external fun nativeCaptureScreenshot(handle: Long)

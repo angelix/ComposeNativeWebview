@@ -196,20 +196,60 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeSetCookie(
     }
 }
 
+static void on_all_cookies_cleared(
+    GObject *source,
+    GAsyncResult *result,
+    gpointer user_data)
+{
+    GError *error = NULL;
+    webkit_website_data_manager_clear_finish(WEBKIT_WEBSITE_DATA_MANAGER(source), result, &error);
+    if (error != NULL) g_error_free(error);
+    compose_webview_deliver_cookies_removed((jlong) GPOINTER_TO_SIZE(user_data));
+}
+
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRemoveAllCookies(
-    JNIEnv *env, jclass clazz, jlong handle)
+    JNIEnv *env, jclass clazz, jlong handle, jlong request_id)
 {
     (void) env; (void) clazz;
     ComposeWebViewState *state = compose_webview_state_from_handle(handle);
-    WebKitCookieManager *cm = cookie_manager_for(state);
-    if (cm == NULL) return;
-    webkit_cookie_manager_delete_all_cookies(cm);
+    WebKitWebsiteDataManager *dm = (state == NULL || state->web_view == NULL)
+        ? NULL
+        : webkit_web_view_get_website_data_manager(state->web_view);
+    if (dm == NULL) {
+        compose_webview_deliver_cookies_removed(request_id);
+        return;
+    }
+    /* Reports back from the completion callback, so the caller knows the jar is empty. */
+    webkit_website_data_manager_clear(
+        dm, WEBKIT_WEBSITE_DATA_COOKIES, 0, NULL,
+        on_all_cookies_cleared, GSIZE_TO_POINTER((gsize) request_id));
 }
 
+/* One removal of a URL's cookies: reports request_id once every deletion has been confirmed. */
 typedef struct {
     WebKitCookieManager *cm;
+    jlong request_id;
+    guint pending;
 } DeleteCookiesCtx;
+
+static void delete_cookies_ctx_done(DeleteCookiesCtx *ctx) {
+    compose_webview_deliver_cookies_removed(ctx->request_id);
+    g_object_unref(ctx->cm);
+    g_free(ctx);
+}
+
+static void on_cookie_deleted(
+    GObject *source,
+    GAsyncResult *result,
+    gpointer user_data)
+{
+    DeleteCookiesCtx *ctx = (DeleteCookiesCtx *) user_data;
+    GError *error = NULL;
+    webkit_cookie_manager_delete_cookie_finish(WEBKIT_COOKIE_MANAGER(source), result, &error);
+    if (error != NULL) g_error_free(error);
+    if (--ctx->pending == 0) delete_cookies_ctx_done(ctx);
+}
 
 static void on_delete_cookies_for_url_fetched(
     GObject *source,
@@ -222,32 +262,41 @@ static void on_delete_cookies_for_url_fetched(
     GList *cookies = webkit_cookie_manager_get_cookies_finish(cm, result, &error);
     if (error != NULL) {
         g_error_free(error);
-    } else if (cookies != NULL) {
-        for (GList *l = cookies; l != NULL; l = l->next) {
-            SoupCookie *cookie = (SoupCookie *) l->data;
-            webkit_cookie_manager_delete_cookie(ctx->cm, cookie, NULL, NULL, NULL);
-            soup_cookie_free(cookie);
-        }
-        g_list_free(cookies);
+        cookies = NULL;
     }
-    g_object_unref(ctx->cm);
-    g_free(ctx);
+    ctx->pending = g_list_length(cookies);
+    if (ctx->pending == 0) {
+        g_list_free(cookies);
+        delete_cookies_ctx_done(ctx);
+        return;
+    }
+    /* Deletions complete asynchronously, each through on_cookie_deleted; the last one frees ctx. */
+    for (GList *l = cookies; l != NULL; l = l->next) {
+        SoupCookie *cookie = (SoupCookie *) l->data;
+        webkit_cookie_manager_delete_cookie(ctx->cm, cookie, NULL, on_cookie_deleted, ctx);
+        soup_cookie_free(cookie);
+    }
+    g_list_free(cookies);
 }
 
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRemoveCookiesForUrl(
-    JNIEnv *env, jclass clazz, jlong handle, jstring url_str)
+    JNIEnv *env, jclass clazz, jlong handle, jstring url_str, jlong request_id)
 {
     (void) clazz;
     ComposeWebViewState *state = compose_webview_state_from_handle(handle);
     WebKitCookieManager *cm = cookie_manager_for(state);
-    if (cm == NULL || url_str == NULL) return;
-
-    const char *url = (*env)->GetStringUTFChars(env, url_str, NULL);
-    if (url == NULL) return;
+    const char *url = (cm == NULL || url_str == NULL)
+        ? NULL
+        : (*env)->GetStringUTFChars(env, url_str, NULL);
+    if (url == NULL) {
+        compose_webview_deliver_cookies_removed(request_id);
+        return;
+    }
 
     DeleteCookiesCtx *ctx = g_new0(DeleteCookiesCtx, 1);
     ctx->cm = g_object_ref(cm);
+    ctx->request_id = request_id;
     webkit_cookie_manager_get_cookies(
         cm, url, NULL, on_delete_cookies_for_url_fetched, ctx);
     (*env)->ReleaseStringUTFChars(env, url_str, url);

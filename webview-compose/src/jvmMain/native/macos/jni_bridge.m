@@ -7,6 +7,7 @@ static jmethodID g_on_ipc = NULL;
 static jmethodID g_on_channel = NULL;
 static jmethodID g_on_js_result = NULL;
 static jmethodID g_on_cookies = NULL;
+static jmethodID g_on_cookies_removed = NULL;
 static jmethodID g_on_screenshot = NULL;
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
@@ -47,6 +48,8 @@ void compose_webview_ensure_bridge_methods(JNIEnv *env) {
         env, g_bridge_class, "nativeOnJsResult", "(JLjava/lang/String;)V");
     g_on_cookies = (*env)->GetStaticMethodID(
         env, g_bridge_class, "nativeOnCookiesResult", "(JLjava/lang/String;)V");
+    g_on_cookies_removed = (*env)->GetStaticMethodID(
+        env, g_bridge_class, "nativeOnCookiesRemoved", "(J)V");
     g_on_screenshot = (*env)->GetStaticMethodID(
         env, g_bridge_class, "nativeOnScreenshotResult", "(J[B)V");
 }
@@ -131,6 +134,17 @@ void compose_webview_deliver_js_result(jlong handle, NSString *payload) {
     jstring jpayload = compose_webview_ns_to_jstring(env, payload ?: @"");
     (*env)->CallStaticVoidMethod(env, g_bridge_class, g_on_js_result, handle, jpayload);
     if (jpayload != NULL) (*env)->DeleteLocalRef(env, jpayload);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+}
+
+void compose_webview_deliver_cookies_removed(jlong request_id) {
+    JNIEnv *env = compose_webview_get_env();
+    if (env == NULL) return;
+    compose_webview_ensure_bridge_methods(env);
+    if (g_bridge_class == NULL || g_on_cookies_removed == NULL) return;
+    (*env)->CallStaticVoidMethod(env, g_bridge_class, g_on_cookies_removed, request_id);
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
     }

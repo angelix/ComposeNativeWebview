@@ -204,14 +204,16 @@ class MacOsWebKitNativeWebView(
         )
     }
 
-    fun removeAllCookiesNative() {
+    /** Returns once the engine reports the cookies gone. */
+    suspend fun removeAllCookiesNative() {
         if (!isReady()) return
-        WebKitMacOsBridge.nativeRemoveAllCookies(handle)
+        WebKitMacOsBridge.removeAllCookies(handle)
     }
 
-    fun removeCookiesForUrlNative(url: String) {
+    /** Returns once the engine reports the cookies of [url]'s host gone. */
+    suspend fun removeCookiesForUrlNative(url: String) {
         if (!isReady()) return
-        WebKitMacOsBridge.nativeRemoveCookiesForUrl(handle, url)
+        WebKitMacOsBridge.removeCookiesForUrl(handle, url)
     }
 
     fun setZoomLevel(zoom: Double) {

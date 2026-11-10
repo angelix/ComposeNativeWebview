@@ -60,6 +60,7 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("K05", "Cookies", "cookie path/domain attributes round-trip"),
         SuiteCase("K06", "Cookies", "multiple cookies coexist for same URL"),
         SuiteCase("K07", "Cookies", "incognito jar isolated from default jar"),
+        SuiteCase("K08", "Cookies", "removeAllCookies and removeCookies have finished when they return"),
         // Interceptor (Wry: NavigationHandler)
         SuiteCase("I01", "Interceptor", "Reject blocks blocked host"),
         SuiteCase("I02", "Interceptor", "Allow permits navigation"),

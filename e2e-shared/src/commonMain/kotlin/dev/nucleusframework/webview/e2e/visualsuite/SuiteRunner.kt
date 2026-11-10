@@ -521,6 +521,31 @@ internal suspend fun runFullSuite(
             )
         }
     }
+    case("K08", required = setOf(SuiteCapability.CookieDomainApi)) {
+        // A host that clears the jar and reloads at once must not send the old cookies: the cookie
+        // has to be gone by the time the call returns, with no wait in between.
+        val url = "https://finished.suite.local/"
+        suspend fun plant(name: String) {
+            ctx.state.cookieManager.setCookie(
+                url,
+                Cookie(name = name, value = "v", domain = "finished.suite.local", path = "/", isSecure = false),
+            )
+            awaitUntil(10_000, "cookie $name present") {
+                ctx.state.cookieManager.getCookies(url).any { it.name == name }
+            }
+        }
+        repeat(3) { round ->
+            plant("suite_k8_all")
+            ctx.state.cookieManager.removeAllCookies()
+            val afterAll = ctx.state.cookieManager.getCookies(url).filter { it.name == "suite_k8_all" }
+            assertThat(afterAll.isEmpty(), "round $round: removeAllCookies returned with $afterAll still in the jar")
+
+            plant("suite_k8_url")
+            ctx.state.cookieManager.removeCookies(url)
+            val afterUrl = ctx.state.cookieManager.getCookies(url).filter { it.name == "suite_k8_url" }
+            assertThat(afterUrl.isEmpty(), "round $round: removeCookies returned with $afterUrl still in the jar")
+        }
+    }
 
     // ── Interceptor ──────────────────────────────────────────────────
     case("I01") {

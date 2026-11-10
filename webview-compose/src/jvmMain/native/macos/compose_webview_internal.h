@@ -46,6 +46,7 @@ NSString *compose_webview_json_escape(NSString *raw);
 
 void compose_webview_deliver_js_result(jlong handle, NSString *payload);
 void compose_webview_deliver_cookies_result(jlong handle, NSString *json);
+void compose_webview_deliver_cookies_removed(jlong request_id);
 void compose_webview_deliver_screenshot_result(jlong handle, NSData *png);
 
 /* view_lifecycle.m */

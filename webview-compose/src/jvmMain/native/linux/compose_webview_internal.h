@@ -39,6 +39,7 @@ jmethodID compose_webview_on_ipc(void);
 jmethodID compose_webview_on_channel_message(void);
 jmethodID compose_webview_on_js_result(void);
 jmethodID compose_webview_on_cookies(void);
+void compose_webview_deliver_cookies_removed(jlong request_id);
 jmethodID compose_webview_on_screenshot(void);
 
 jstring compose_webview_utf8_to_jstring(JNIEnv *env, const gchar *utf8);

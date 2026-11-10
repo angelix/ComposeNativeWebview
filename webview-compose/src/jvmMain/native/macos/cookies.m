@@ -144,43 +144,67 @@ Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeSetCookie(
     [store setCookie:cookie completionHandler:^{}];
 }
 
+// Deletes `cookies` and reports `request_id` finished once WebKit has confirmed every deletion, so
+// a caller that reloads right after the removal cannot send what it just removed.
+static void delete_cookies(WKHTTPCookieStore *store, NSArray<NSHTTPCookie *> *cookies, jlong request_id) {
+    dispatch_group_t deletions = dispatch_group_create();
+    for (NSHTTPCookie *cookie in cookies) {
+        dispatch_group_enter(deletions);
+        [store deleteCookie:cookie completionHandler:^{
+            dispatch_group_leave(deletions);
+        }];
+    }
+    dispatch_group_notify(deletions, dispatch_get_main_queue(), ^{
+        compose_webview_deliver_cookies_removed(request_id);
+    });
+}
+
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeRemoveAllCookies(
-    JNIEnv *env, jclass clazz, jlong handle)
+    JNIEnv *env, jclass clazz, jlong handle, jlong request_id)
 {
     (void)env; (void)clazz;
     ComposeWebViewState *state = compose_webview_state_from_handle(handle);
-    if (state == nil || state.webView == nil) return;
+    if (state == nil || state.webView == nil) {
+        compose_webview_deliver_cookies_removed(request_id);
+        return;
+    }
 
     WKHTTPCookieStore *store =
         state.webView.configuration.websiteDataStore.httpCookieStore;
     [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
-        for (NSHTTPCookie *cookie in cookies) {
-            [store deleteCookie:cookie completionHandler:^{}];
-        }
+        delete_cookies(store, cookies, request_id);
     }];
 }
 
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_webview_web_macos_WebKitMacOsBridge_nativeRemoveCookiesForUrl(
-    JNIEnv *env, jclass clazz, jlong handle, jstring url_str)
+    JNIEnv *env, jclass clazz, jlong handle, jstring url_str, jlong request_id)
 {
     (void)clazz;
     ComposeWebViewState *state = compose_webview_state_from_handle(handle);
-    if (state == nil || state.webView == nil || url_str == NULL) return;
+    if (state == nil || state.webView == nil || url_str == NULL) {
+        compose_webview_deliver_cookies_removed(request_id);
+        return;
+    }
 
     NSString *url = compose_webview_jstring_to_ns(env, url_str);
     NSURL *nsurl = url != nil ? [NSURL URLWithString:url] : nil;
     NSString *host = nsurl.host;
-    if (host == nil) return;
+    if (host == nil) {
+        compose_webview_deliver_cookies_removed(request_id);
+        return;
+    }
 
     WKHTTPCookieStore *store =
         state.webView.configuration.websiteDataStore.httpCookieStore;
     [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+        NSMutableArray<NSHTTPCookie *> *matching = [NSMutableArray array];
         for (NSHTTPCookie *cookie in cookies) {
             if (host_matches_cookie_domain(host, cookie.domain)) {
-                [store deleteCookie:cookie completionHandler:^{}];
+                [matching addObject:cookie];
             }
         }
+        delete_cookies(store, matching, request_id);
     }];
 }

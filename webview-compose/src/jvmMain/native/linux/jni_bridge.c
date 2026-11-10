@@ -7,6 +7,7 @@ static jmethodID g_on_ipc = NULL;
 static jmethodID g_on_channel = NULL;
 static jmethodID g_on_js_result = NULL;
 static jmethodID g_on_cookies = NULL;
+static jmethodID g_on_cookies_removed = NULL;
 static jmethodID g_on_screenshot = NULL;
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
@@ -47,6 +48,8 @@ void compose_webview_ensure_bridge_methods(JNIEnv *env) {
         env, g_bridge_class, "nativeOnJsResult", "(JLjava/lang/String;)V");
     g_on_cookies = (*env)->GetStaticMethodID(
         env, g_bridge_class, "nativeOnCookiesResult", "(JLjava/lang/String;)V");
+    g_on_cookies_removed = (*env)->GetStaticMethodID(
+        env, g_bridge_class, "nativeOnCookiesRemoved", "(J)V");
     g_on_screenshot = (*env)->GetStaticMethodID(
         env, g_bridge_class, "nativeOnScreenshotResult", "(J[B)V");
 }
@@ -57,6 +60,18 @@ jmethodID compose_webview_on_ipc(void) { return g_on_ipc; }
 jmethodID compose_webview_on_channel_message(void) { return g_on_channel; }
 jmethodID compose_webview_on_js_result(void) { return g_on_js_result; }
 jmethodID compose_webview_on_cookies(void) { return g_on_cookies; }
+
+/* Tells the Kotlin side that the cookie removal started with request_id has finished. */
+void compose_webview_deliver_cookies_removed(jlong request_id) {
+    JNIEnv *env = compose_webview_get_env();
+    if (env == NULL) return;
+    compose_webview_ensure_bridge_methods(env);
+    if (g_bridge_class == NULL || g_on_cookies_removed == NULL) return;
+    (*env)->CallStaticVoidMethod(env, g_bridge_class, g_on_cookies_removed, request_id);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+}
 jmethodID compose_webview_on_screenshot(void) { return g_on_screenshot; }
 
 /*
