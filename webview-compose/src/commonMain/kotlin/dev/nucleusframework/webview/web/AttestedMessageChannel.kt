@@ -11,19 +11,28 @@ package dev.nucleusframework.webview.web
  * `reply` (any thread, at most once) to resolve the page's promise. A reply is never delivered to a
  * later document than the one that sent the message (on macOS it can still settle the old
  * document's promise after a navigation). An exception thrown by [onMessage] is logged and the
- * page's promise stays pending. Supported on macOS (WKWebView) and Windows (WebView2); ignored on
- * Linux.
+ * page's promise stays pending. Supported on macOS (WKWebView), Windows (WebView2) and Linux
+ * (WebKitGTK 2.40 or later).
+ *
+ * [AttestedMessage.origin] is `scheme://host[:port]` for an `http(s)` origin and `"null"` for
+ * anything else: sandboxed documents, `data:` and `file:` documents, `about:blank`.
  *
  * Attestation follows the browser's same-origin model: a same-origin frame (including
  * `about:blank` and `srcdoc` frames) can call `parent[name].postMessage`, and its message is
  * attested as the main frame's. Per OS:
- * - macOS: [AttestedMessage.origin] is WebKit's security origin of the sending frame. Sub-frame
- *   messages arrive with `isMainFrame == false`. The promise rejects when the body is not a string,
- *   a string cannot cross to or from the host, the host is unavailable, or the WebView is released
- *   before the reply.
- * - Windows: the origin is derived from the sending document's URL, so a `blob:` top document is
- *   "null" and a CSP-sandboxed document reports its URL's origin. Only the top-level document
- *   reaches the channel. The promise never rejects; an unanswered message stays pending.
+ * - macOS: the origin is WebKit's security origin of the sending frame. Sub-frame messages arrive
+ *   with `isMainFrame == false`. The promise rejects when the body is not a string, a string cannot
+ *   cross to or from the host, the host is unavailable, or the WebView is released before the reply.
+ * - Linux: WebKitGTK does not say who sent a script message, so the message handler lives in a
+ *   script world of its own, where the page cannot reach it, and a relay script there reports the
+ *   document it runs in: its `window.origin` and whether it is the top window. Only the top-level
+ *   document reaches the channel. The promise rejects as on macOS.
+ * - Windows: WebView2 gives the sending document's URL but not its frame, so the top-level
+ *   document proves itself with a key the host hands it through a script that only that document
+ *   runs. The origin is the one the document reads for itself before any page script runs, when its
+ *   URL bears it out, and `"null"` otherwise (so a `blob:` top document is `"null"`). Only the
+ *   top-level document reaches the channel. The promise never rejects; an unanswered message stays
+ *   pending.
  *
  * [name] must be a JS identifier, must not be `ipc`, and must differ from the WebView's
  * `jsBridgeName` (checked when the native view is created).

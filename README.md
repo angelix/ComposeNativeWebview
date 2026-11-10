@@ -56,7 +56,7 @@ If you already know **compose-webview-multiplatform**, you already know how to u
     (`window.open`, `target=_blank`) loads in the same view only when the main frame asks for an
     `http(s)` URL; popups from sub-frames and `about:blank`, `javascript:`, `file:`, `data:` or
     `blob:` popups are ignored. No second window is ever opened. (On Windows a WebView2 Runtime
-    too old to report which frame asked ignores every popup.)
+    too old to report which frame asked ignores every popup.) On Linux every popup is ignored.
 
 ---
 
@@ -240,7 +240,7 @@ navigator.evaluateJavaScript("document.title = 'Hello'")
 window.kmpJsBridge.callNative("echo", {...}, callback)
 ```
 
-### Attested message channel (desktop: macOS, Windows)
+### Attested message channel (desktop)
 
 For a host that must know *who* is talking (a wallet answering a page, for example), `kmpJsBridge`
 and `window.ipc` are not enough: they are page globals present in every frame, and carry no origin
@@ -265,6 +265,9 @@ still settle the old document's promise after a navigation). An exception thrown
 logged and the page's promise stays pending. Set the channel before the WebView is created; its
 name must be a JS identifier, not `ipc`, and not the WebView's `jsBridgeName`.
 
+`message.origin` is `scheme://host[:port]` for an `http(s)` origin and `"null"` for anything else:
+sandboxed documents, `data:` and `file:` documents, `about:blank`.
+
 Attestation follows the browser's same-origin model: a same-origin frame (including `about:blank`
 and `srcdoc` frames) can call `parent.myChannel.postMessage`, and its message is attested as the
 main frame's.
@@ -273,10 +276,17 @@ main frame's.
   reach the channel with `isMainFrame == false`. The promise rejects when the body is not a string,
   a string cannot cross to or from the host, the host is unavailable, or the WebView is released
   before the reply.
-* **Windows**: the origin is derived from the sending document's URL (a `blob:` top document is
-  `"null"`; a CSP-sandboxed document reports its URL's origin). Only the top-level document reaches
-  the channel; messages from sub-frames never do. The promise never rejects.
-* **Linux**: not supported (ignored).
+* **Linux** (WebKitGTK 2.40+): WebKitGTK does not say who sent a script message, so the message
+  handler lives in a script world of its own, where the page cannot reach it. A relay script there
+  reports the document it runs in (its `window.origin`, and whether it is the top window) and
+  passes the page's messages on. Only the top-level document reaches the channel; messages from
+  sub-frames never do. The promise rejects as on macOS.
+* **Windows**: WebView2 gives the sending document's URL but not its frame, and `chrome.webview`
+  exists in every frame. So the top-level document proves itself with a key the host hands it
+  through `ExecuteScript`, which only that document runs. The origin is the one the document reads
+  for itself before any page script runs, when its URL bears it out, and `"null"` otherwise (a
+  `blob:` top document is `"null"`). Only the top-level document reaches the channel; messages from
+  sub-frames never do. The promise never rejects.
 
 ### RequestInterceptor
 

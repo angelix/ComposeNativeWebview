@@ -30,7 +30,7 @@ sealed class PlatformWebSettings {
         var autoplayWithoutUserInteraction: Boolean = false,
         var focused: Boolean = true,
         /**
-         * Optional page→host channel with engine-attested origin and frame (macOS, Windows).
+         * Optional page→host channel with engine-attested origin and frame.
          * Read when the native view is created.
          */
         var messageChannel: AttestedMessageChannel? = null,
