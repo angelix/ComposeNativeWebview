@@ -96,6 +96,9 @@ internal suspend fun <T> runCase(
         val result = block()
         onStatus(CaseStatus.Passed, "ok")
         result
+    } catch (skip: SuiteSkip) {
+        onStatus(CaseStatus.Skipped, skip.message ?: "not measurable")
+        null
     } catch (t: Throwable) {
         onStatus(CaseStatus.Failed, t.message ?: t::class.simpleName ?: "error")
         null
