@@ -11,7 +11,17 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 
-internal data class WindowsEnvelope(val id: Long, val body: String, val document: String)
+/** What the Windows shim posts over `chrome.webview`, decoded by [AttestedChannelScripts.parseWindowsMessage]. */
+internal sealed class WindowsMessage {
+    /** A document introducing itself: its token and the origin it read before any page script ran. */
+    data class Hello(val document: String, val origin: String) : WindowsMessage()
+
+    /** A page message, with the key the host handed the document that sends it. */
+    data class Request(val document: String, val key: String, val id: Long, val body: String) : WindowsMessage()
+
+    /** Tagged for the channel but not a well-formed hello or request. */
+    object Malformed : WindowsMessage()
+}
 
 /** What the Linux relay script reports about the document it runs in, with the page's message. */
 internal data class LinuxEnvelope(val origin: String, val isMainFrame: Boolean, val body: String)
@@ -33,6 +43,8 @@ internal object AttestedChannelScripts {
     fun linuxRelayEvent(channel: String): String = "__nucleusChannelRelay_$channel"
 
     fun resolverName(channel: String): String = "__nucleusChannelResolve_$channel"
+
+    fun keyReceiverName(channel: String): String = "__nucleusChannelKeyReceiver_$channel"
 
     /**
      * `scheme://host[:port]` as browsers serialise an origin; "null" for opaque or unparsable URLs
@@ -79,20 +91,51 @@ internal object AttestedChannelScripts {
         })();
     """.trimIndent()
 
-    /** Windows: a promise per message over chrome.webview, resolved by [windowsReplyScript]. */
+    /**
+     * Windows: a promise per message over `chrome.webview`, resolved by [windowsReplyScript].
+     *
+     * WebView2 tells the host the URL of the document that posted a message but not whether it is
+     * the top-level document, and `chrome.webview` exists in every frame. So the shim introduces
+     * itself with a random token and the origin it reads before any page script runs, and the host
+     * answers with a key through [windowsKeyScript]. That script runs with `ExecuteScript`, which
+     * reaches the top-level document only, so a request carrying the key comes from that document.
+     */
     fun windowsShim(channel: String): String = """
         (function () {
           if (window.top !== window) { return; }
           var wv = window.chrome && window.chrome.webview;
           if (!wv || Object.prototype.hasOwnProperty.call(window, ${js(channel)})) { return; }
           if (!window.crypto || typeof window.crypto.getRandomValues !== "function") { return; }
-          var bytes = new Uint8Array(16);
-          window.crypto.getRandomValues(bytes);
-          var token = "";
-          for (var i = 0; i < bytes.length; i++) { token += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16); }
           var post = wv.postMessage.bind(wv);
+          var stringify = JSON.stringify;
+          var origin = String(window.origin);
+          var token = null;
+          var key = null;
+          var queued = [];
           var pending = {};
           var next = 1;
+          function introduce() {
+            var bytes = new Uint8Array(16);
+            window.crypto.getRandomValues(bytes);
+            var fresh = "";
+            for (var i = 0; i < bytes.length; i++) { fresh += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16); }
+            token = fresh;
+            key = null;
+            post(stringify({ "$CHANNEL_TAG": ${js(channel)}, doc: token, hello: origin }));
+          }
+          function send(id, body) {
+            post(stringify({ "$CHANNEL_TAG": ${js(channel)}, doc: token, key: key, id: id, body: body }));
+          }
+          Object.defineProperty(window, ${js(keyReceiverName(channel))}, {
+            value: function (doc, received) {
+              if (doc !== token || key !== null || typeof received !== "string") { return; }
+              key = received;
+              var waiting = queued;
+              queued = [];
+              for (var i = 0; i < waiting.length; i++) { send(waiting[i][0], waiting[i][1]); }
+            },
+            writable: false, configurable: false, enumerable: false
+          });
           Object.defineProperty(window, ${js(resolverName(channel))}, {
             value: function (doc, id, payload) {
               if (doc === token) {
@@ -107,13 +150,18 @@ internal object AttestedChannelScripts {
               postMessage: function (body) {
                 return new Promise(function (resolve) {
                   var id = next++;
+                  var text = String(body);
                   pending[id] = resolve;
-                  post(JSON.stringify({ "$CHANNEL_TAG": ${js(channel)}, doc: token, id: id, body: String(body) }));
+                  if (key === null) { queued.push([id, text]); } else { send(id, text); }
                 });
               }
             }),
             writable: false, configurable: false, enumerable: false
           });
+          window.addEventListener("pageshow", function (e) {
+            if (e.isTrusted && e.persisted) { introduce(); }
+          });
+          introduce();
         })();
     """.trimIndent()
 
@@ -235,15 +283,34 @@ internal object AttestedChannelScripts {
         return LinuxEnvelope(origin, isMainFrame, body)
     }
 
-    fun parseWindowsEnvelope(raw: String, channel: String): WindowsEnvelope? {
+    /**
+     * Null for anything that is not this channel's traffic (the library's own `window.ipc` and JS
+     * bridge messages); [WindowsMessage.Malformed] for traffic tagged for the channel that is not a
+     * well-formed hello or request, so it is dropped rather than queued as IPC.
+     */
+    fun parseWindowsMessage(raw: String, channel: String): WindowsMessage? {
         val obj = runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
         val tag = (obj[CHANNEL_TAG] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return null
         if (tag != channel) return null
-        val document = (obj["doc"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.takeIf { it.isNotEmpty() } ?: return null
-        val id = (obj["id"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: return null
-        val body = (obj["body"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return null
-        return WindowsEnvelope(id, body, document)
+        fun string(name: String): String? = (obj[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+        val document = string("doc")?.takeIf { it.isNotEmpty() } ?: return WindowsMessage.Malformed
+        if ("hello" in obj) {
+            val origin = string("hello") ?: return WindowsMessage.Malformed
+            return WindowsMessage.Hello(document, origin)
+        }
+        val key = string("key")?.takeIf { it.isNotEmpty() } ?: return WindowsMessage.Malformed
+        val id = (obj["id"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: return WindowsMessage.Malformed
+        val body = string("body") ?: return WindowsMessage.Malformed
+        return WindowsMessage.Request(document, key, id, body)
     }
+
+    /**
+     * Hands the top-level document its key. Runs in whatever document is current; only the shim of
+     * the document that sent the hello for [document] accepts it.
+     */
+    fun windowsKeyScript(channel: String, document: String, key: String): String =
+        "(function(){var r=window[${js(keyReceiverName(channel))}];" +
+            "if(typeof r==='function'){r(${js(document)}, ${js(key)});}})();"
 
     /** Runs in whatever document is current; only resolves if it is the sending document (same origin and token). */
     fun windowsReplyScript(channel: String, origin: String, document: String, id: Long, payload: String): String =

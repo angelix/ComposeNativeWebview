@@ -752,14 +752,17 @@ internal suspend fun runFullSuite(
         val received = mutableListOf<AttestedMessage>()
         val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("x") }
         withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
-            // The frame tries every route to the host: the WebKit handler, the WebView2 channel, the
-            // parent's frozen object, and the Linux relay (offering a pipe of its own to a relay in its
-            // own frame and to the parent's, and posting a request on it). It then tells the top page
-            // that it ran and whether it saw the WebView2 channel, so the case cannot pass because the
-            // frame never executed.
+            // The frame tries every route to the host: the WebKit handler, the WebView2 channel
+            // (introducing itself as the embedding page, then posting under a made-up key), the parent's
+            // frozen object, and the Linux relay (offering a pipe of its own to a relay in its own frame
+            // and to the parent's, and posting a request on it). It then tells the top page that it ran
+            // and whether it saw the WebView2 channel, so the case cannot pass because the frame never
+            // executed.
             val frame = "<script>" +
                 "try{window.webkit.messageHandlers.suiteChan.postMessage('from-frame')}catch(e){}" +
-                "try{window.chrome.webview.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',doc:'frame',id:1,body:'from-frame'}))}catch(e){}" +
+                "try{var wv=window.chrome.webview;" +
+                "wv.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',doc:'frame',hello:'https://main.suite.test'}));" +
+                "wv.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',doc:'frame',key:'forged',id:1,body:'from-frame'}))}catch(e){}" +
                 "try{window.parent.suiteChan.postMessage('from-frame')}catch(e){}" +
                 "var pipe=new EventTarget();" +
                 "function offer(w){w.dispatchEvent(new FocusEvent('__nucleusChannelHello_suiteChan',{cancelable:true,relatedTarget:pipe}))}" +
@@ -876,6 +879,17 @@ internal suspend fun runFullSuite(
                     try { window[rn] = swallow; } catch (e) {}
                     try { Object.defineProperty(window, rn, { value: swallow }); } catch (e) {}
                     try { delete window[rn]; } catch (e) {}
+                    // What the page says about itself must not change what the host is told.
+                    try { window.origin = 'https://forged.suite.test'; } catch (e) {}
+                    try { Object.defineProperty(window, 'origin', { value: 'https://forged.suite.test' }); } catch (e) {}
+                    try { Object.defineProperty(window, 'top', { value: null }); } catch (e) {}
+                    // Windows: a second hello under another origin, a request under a made-up key, and a
+                    // key the page hands itself. Elsewhere chrome.webview does not exist.
+                    try {
+                        window.chrome.webview.postMessage(JSON.stringify({ __nucleusChannel: 'suiteChan', doc: 'forged', hello: 'https://forged.suite.test' }));
+                        window.chrome.webview.postMessage(JSON.stringify({ __nucleusChannel: 'suiteChan', doc: 'forged', key: 'forged', id: 9, body: 'forged-request' }));
+                    } catch (e) {}
+                    try { window['__nucleusChannelKeyReceiver_suiteChan']('forged', 'forged'); } catch (e) {}
                     // The Linux relay and shim: offer the relay a pipe of the page's own and post a request
                     // on it, ask the shim for its pipe the way a starting relay does, and (below) forge the
                     // reply to the pending request (id 1) wherever the page can dispatch one. Elsewhere
@@ -938,6 +952,42 @@ internal suspend fun runFullSuite(
                 val expected = if (SuiteCapability.LoadHtmlBaseUriOrigin in caps) serialised else "null"
                 assertThat(msg.origin == expected, "base URI $baseUri: origin=${msg.origin}, expected $expected")
                 assertThat(msg.isMainFrame, "base URI $baseUri: main frame not attested")
+            }
+        }
+    }
+    case("M08", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val requests = mutableListOf<Pair<AttestedMessage, (String) -> Unit>>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> requests += msg to reply }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m08-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m08-ready</div><script>
+                    window.suiteChan.postMessage('before').then(function (r) { window.__m08before = r; });
+                    window.addEventListener('message', function (e) {
+                        if (e.data === 'm08-frame') { document.__m08frame = 'loaded'; }
+                    });
+                    window.__m08change = function () {
+                        var frame = document.createElement('iframe');
+                        frame.src = 'data:text/html,' + encodeURIComponent("<script>parent.postMessage('m08-frame','*')<\/script>");
+                        document.body.appendChild(frame);
+                        location.hash = 'm08';
+                    };
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "first request") { requests.size == 1 }
+            // Neither a document loading in a sub-frame nor a navigation inside the page is a new
+            // top-level document: the pending reply still lands, and the page can still post.
+            nv.evalJsUnquotedAsync("window.__m08change(); 'x'")
+            awaitUntil(10_000, "frame loaded") { nv.evalJsUnquotedAsync("document.__m08frame || ''") == "loaded" }
+            nv.evalJsUnquotedAsync("window.suiteChan.postMessage('after').then(function (r) { window.__m08after = r; }); 'x'")
+            awaitUntil(10_000, "second request") { requests.size == 2 }
+            assertThat(requests.map { it.first.body } == listOf("before", "after"), "requests=${requests.map { it.first }}")
+            assertThat(requests.all { it.first.isMainFrame && it.first.origin == requests[0].first.origin }, "requests=${requests.map { it.first }}")
+            requests[0].second("reply-before")
+            requests[1].second("reply-after")
+            awaitUntil(10_000, "replies") {
+                nv.evalJsUnquotedAsync("String(window.__m08before) + '/' + String(window.__m08after)") == "reply-before/reply-after"
             }
         }
     }

@@ -5,6 +5,9 @@ import dev.nucleusframework.webview.util.KLogger
 import dev.nucleusframework.webview.web.AttestedChannelScripts
 import dev.nucleusframework.webview.web.AttestedMessage
 import dev.nucleusframework.webview.web.AttestedMessageChannel
+import dev.nucleusframework.webview.web.WindowsChannelSession
+import dev.nucleusframework.webview.web.WindowsMessage
+import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -26,6 +29,7 @@ import kotlinx.coroutines.launch
 internal object WebView2WindowsBridge {
     private const val LIBRARY_NAME = "compose_webview_windows"
     private const val LOG_TAG = "WebView2WindowsBridge"
+    private const val KEY_BYTES = 16
 
     val isLoaded: Boolean =
         NativeLibraryLoader.load(
@@ -46,12 +50,20 @@ internal object WebView2WindowsBridge {
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<ByteArray?>>>()
 
     private val channels = ConcurrentHashMap<Long, AttestedMessageChannel>()
+    private val sessions = ConcurrentHashMap<Long, WindowsChannelSession>()
+    private val random = SecureRandom()
 
     // Replies run native calls, which must happen on the Tao main thread.
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     fun registerChannel(handle: Long, channel: AttestedMessageChannel) {
         channels[handle] = channel
+        sessions[handle] = WindowsChannelSession(newKey = ::newKey)
+    }
+
+    private fun newKey(): String {
+        val bytes = ByteArray(KEY_BYTES).also(random::nextBytes)
+        return bytes.joinToString("") { ((it.toInt() and 0xFF) + 0x100).toString(16).substring(1) }
     }
 
     fun addNavigateListener(handle: Long, listener: (String) -> Boolean) {
@@ -87,6 +99,7 @@ internal object WebView2WindowsBridge {
     fun clearHandle(handle: Long) {
         navigateHandlers.remove(handle)
         channels.remove(handle)
+        sessions.remove(handle)
         ipcQueues.remove(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
@@ -112,32 +125,51 @@ internal object WebView2WindowsBridge {
     }
 
     /**
-     * A string message from the top-level document, tagged with that document's URI and the
-     * navigation generation it arrived in. Messages that are not envelopes for the channel
+     * A string message posted over `chrome.webview`, with the URI of the document that posted it
+     * and the top-level document generation it arrived in. Messages that are not the channel's
      * (the library's own `window.ipc` and JS bridge traffic) go to the IPC queue.
+     *
+     * A hello is answered with a key that only the top-level document receives; a request reaches
+     * the channel only when it returns that key (see [WindowsChannelSession]).
      */
     @JvmStatic
     fun nativeOnSourcedMessage(handle: Long, generation: Long, source: String, raw: String) {
         val channel = channels[handle]
-        val envelope = channel?.let { AttestedChannelScripts.parseWindowsEnvelope(raw, it.name) }
-        if (channel == null || envelope == null) {
+        val session = sessions[handle]
+        val message = channel?.let { AttestedChannelScripts.parseWindowsMessage(raw, it.name) }
+        if (channel == null || session == null || message == null) {
             nativeOnIpcMessage(handle, raw)
             return
         }
-        val origin = AttestedChannelScripts.originOf(source)
-        val replied = AtomicBoolean(false)
-        // Only the top-level document reaches CoreWebView2.WebMessageReceived (iframes need
-        // CoreWebView2Frame), and the shim installs only in the top frame.
-        try {
-            channel.onMessage(AttestedMessage(body = envelope.body, origin = origin, isMainFrame = true)) { payload ->
-                if (!replied.compareAndSet(false, true)) return@onMessage
-                val script = AttestedChannelScripts.windowsReplyScript(channel.name, origin, envelope.document, envelope.id, payload)
-                mainScope.launch {
-                    if (channels.containsKey(handle)) nativeExecuteIfGeneration(handle, generation, script)
+        when (message) {
+            WindowsMessage.Malformed -> Unit
+            is WindowsMessage.Hello -> {
+                val key = session.hello(generation, message.document, message.origin, source) ?: return
+                nativeExecuteIfGeneration(
+                    handle,
+                    generation,
+                    AttestedChannelScripts.windowsKeyScript(channel.name, message.document, key),
+                )
+            }
+            is WindowsMessage.Request -> {
+                val origin = session.authenticate(message.document, message.key, source) ?: return
+                // The reply script compares location.origin, which follows the URL even when the
+                // document's own origin is opaque.
+                val urlOrigin = AttestedChannelScripts.originOf(source)
+                val replied = AtomicBoolean(false)
+                try {
+                    channel.onMessage(AttestedMessage(body = message.body, origin = origin, isMainFrame = true)) { payload ->
+                        if (!replied.compareAndSet(false, true)) return@onMessage
+                        val script =
+                            AttestedChannelScripts.windowsReplyScript(channel.name, urlOrigin, message.document, message.id, payload)
+                        mainScope.launch {
+                            if (channels.containsKey(handle)) nativeExecuteIfGeneration(handle, generation, script)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
                 }
             }
-        } catch (t: Throwable) {
-            KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
         }
     }
 

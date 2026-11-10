@@ -49,18 +49,127 @@ class AttestedChannelScriptsTest {
     }
 
     @Test
-    fun parseWindowsEnvelope_acceptsOnlyThisChannelsWellFormedMessages() {
-        val ok = """{"__nucleusChannel":"wallet","doc":"d0c","id":7,"body":"{\"r\":1}"}"""
-        assertEquals(WindowsEnvelope(7, """{"r":1}""", "d0c"), AttestedChannelScripts.parseWindowsEnvelope(ok, "wallet"))
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope(ok, "other"), "wrong channel")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"d","body":"x"}""", "wallet"), "no id")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"d","id":1,"body":5}""", "wallet"), "body not a string")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"d","id":"1","body":"x"}""", "wallet"), "id not a number")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","id":1,"body":"x"}""", "wallet"), "no doc")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":5,"id":1,"body":"x"}""", "wallet"), "doc not a string")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"__nucleusChannel":"wallet","doc":"","id":1,"body":"x"}""", "wallet"), "empty doc")
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("not json", "wallet"))
-        assertNull(AttestedChannelScripts.parseWindowsEnvelope("""{"type":"bridge"}""", "wallet"), "untagged traffic stays on ipc")
+    fun parseWindowsMessage_readsRequestsAndHellosOfThisChannelOnly() {
+        val request = """{"__nucleusChannel":"wallet","doc":"d0c","key":"k3y","id":7,"body":"{\"r\":1}"}"""
+        assertEquals(
+            WindowsMessage.Request(document = "d0c", key = "k3y", id = 7, body = """{"r":1}"""),
+            AttestedChannelScripts.parseWindowsMessage(request, "wallet"),
+        )
+        val hello = """{"__nucleusChannel":"wallet","doc":"d0c","hello":"https://dapp.example"}"""
+        assertEquals(
+            WindowsMessage.Hello(document = "d0c", origin = "https://dapp.example"),
+            AttestedChannelScripts.parseWindowsMessage(hello, "wallet"),
+        )
+        assertNull(AttestedChannelScripts.parseWindowsMessage(request, "other"), "wrong channel")
+        assertNull(AttestedChannelScripts.parseWindowsMessage(hello, "other"), "wrong channel")
+        assertNull(AttestedChannelScripts.parseWindowsMessage("not json", "wallet"))
+        assertNull(AttestedChannelScripts.parseWindowsMessage("""{"type":"bridge"}""", "wallet"), "untagged traffic stays on ipc")
+    }
+
+    @Test
+    fun parseWindowsMessage_marksMalformedTrafficOfThisChannelSoItNeverReachesIpc() {
+        for ((raw, why) in listOf(
+            """{"__nucleusChannel":"wallet","doc":"d","key":"k","body":"x"}""" to "no id",
+            """{"__nucleusChannel":"wallet","doc":"d","key":"k","id":"1","body":"x"}""" to "id not a number",
+            """{"__nucleusChannel":"wallet","doc":"d","key":"k","id":1,"body":5}""" to "body not a string",
+            """{"__nucleusChannel":"wallet","doc":"d","id":1,"body":"x"}""" to "no key",
+            """{"__nucleusChannel":"wallet","doc":"d","key":5,"id":1,"body":"x"}""" to "key not a string",
+            """{"__nucleusChannel":"wallet","doc":"d","key":"","id":1,"body":"x"}""" to "empty key",
+            """{"__nucleusChannel":"wallet","key":"k","id":1,"body":"x"}""" to "no doc",
+            """{"__nucleusChannel":"wallet","doc":5,"key":"k","id":1,"body":"x"}""" to "doc not a string",
+            """{"__nucleusChannel":"wallet","doc":"","key":"k","id":1,"body":"x"}""" to "empty doc",
+            """{"__nucleusChannel":"wallet","doc":"d","hello":5}""" to "hello not a string",
+            """{"__nucleusChannel":"wallet","doc":"","hello":"null"}""" to "hello with an empty doc",
+            """{"__nucleusChannel":"wallet"}""" to "neither a hello nor a request",
+        )) {
+            assertEquals(WindowsMessage.Malformed, AttestedChannelScripts.parseWindowsMessage(raw, "wallet"), why)
+        }
+    }
+
+    private fun session(capacity: Int = 4): WindowsChannelSession {
+        var n = 0
+        return WindowsChannelSession(newKey = { "key-${++n}" }, capacity = capacity)
+    }
+
+    @Test
+    fun windowsSession_attestsADocumentThatReturnsTheKeyItWasHanded() {
+        val s = session()
+        val key = s.hello(generation = 3, document = "docA", claimedOrigin = "https://dapp.example", source = "https://dapp.example/page")
+        assertEquals("key-1", key)
+        assertEquals(
+            "https://dapp.example",
+            s.authenticate(document = "docA", key = "key-1", source = "https://dapp.example/other#x"),
+        )
+    }
+
+    @Test
+    fun windowsSession_refusesWhatTheTopDocumentWasNotHanded() {
+        val s = session()
+        s.hello(3, "docA", "https://dapp.example", "https://dapp.example/")
+        s.hello(3, "docB", "https://dapp.example", "https://dapp.example/")
+        assertNull(s.authenticate("docA", "guess", "https://dapp.example/"), "wrong key")
+        assertNull(s.authenticate("docA", "key-2", "https://dapp.example/"), "another document's key")
+        assertNull(s.authenticate("docA", "key-", "https://dapp.example/"), "part of the key")
+        assertNull(s.authenticate("unknown", "key-1", "https://dapp.example/"), "no hello for this token")
+        assertNull(
+            s.authenticate("docA", "key-1", "https://frame.example/"),
+            "the key from a document whose URL has another origin",
+        )
+        assertEquals("https://dapp.example", s.authenticate("docA", "key-1", "https://dapp.example/"), "the right key still works")
+    }
+
+    @Test
+    fun windowsSession_forgetsEarlierDocumentsWhenANewOneLoads() {
+        val s = session()
+        s.hello(3, "docA", "https://dapp.example", "https://dapp.example/")
+        assertEquals("key-2", s.hello(4, "docB", "https://dapp.example", "https://dapp.example/"))
+        assertNull(s.authenticate("docA", "key-1", "https://dapp.example/"), "the previous document's key")
+        assertEquals("https://dapp.example", s.authenticate("docB", "key-2", "https://dapp.example/"))
+        assertNull(s.hello(3, "docC", "https://dapp.example", "https://dapp.example/"), "a hello from an earlier generation")
+    }
+
+    @Test
+    fun windowsSession_handsEachDocumentTokenOneKeyAndCapsHowManyItTracks() {
+        val s = session(capacity = 2)
+        assertEquals("key-1", s.hello(1, "docA", "null", "data:text/html,x"))
+        assertNull(s.hello(1, "docA", "https://dapp.example", "https://dapp.example/"), "a second hello cannot replace the first")
+        assertEquals("null", s.authenticate("docA", "key-1", "data:text/html,x"))
+        assertEquals("key-2", s.hello(1, "docB", "null", "about:blank"))
+        assertNull(s.hello(1, "docC", "null", "about:blank"), "over capacity")
+        assertEquals("null", s.authenticate("docA", "key-1", "data:text/html,x"), "the first document still authenticates")
+    }
+
+    @Test
+    fun windowsSession_reportsTheDocumentsOwnOriginOnlyWhenItsUrlAgrees() {
+        val s = session(capacity = 8)
+        fun attested(claimed: String, source: String): String? {
+            val doc = "doc-$claimed-$source"
+            val key = s.hello(1, doc, claimed, source) ?: return null
+            return s.authenticate(doc, key, source)
+        }
+        assertEquals("https://dapp.example", attested("https://dapp.example", "https://dapp.example/p"))
+        assertEquals("http://localhost:8080", attested("http://localhost:8080", "http://localhost:8080/"))
+        assertEquals("null", attested("null", "https://dapp.example/sandboxed"), "a sandboxed document is opaque whatever its URL")
+        assertEquals("null", attested("null", "data:text/html,x"))
+        assertEquals("null", attested("https://dapp.example", "blob:https://dapp.example/uuid"), "no URL origin to agree with")
+        assertEquals("null", attested("https://bank.example", "https://dapp.example/"), "a claim the URL contradicts")
+        assertEquals("null", attested("file://", "file:///C:/x.html"))
+    }
+
+    @Test
+    fun windowsSession_comparesOriginsOfAnOpaqueDocumentByUrlToo() {
+        val s = session()
+        s.hello(1, "docA", "null", "https://dapp.example/sandboxed")
+        assertEquals("null", s.authenticate("docA", "key-1", "https://dapp.example/sandboxed#frag"))
+        assertNull(s.authenticate("docA", "key-1", "https://frame.example/"), "the key from a document at another origin's URL")
+    }
+
+    @Test
+    fun windowsKeyScript_callsTheReceiverWithJsonLiterals() {
+        val script = AttestedChannelScripts.windowsKeyScript("wallet", "tok\"en", "k</script>")
+        assertTrue(AttestedChannelScripts.keyReceiverName("wallet") in script)
+        assertTrue("(\"tok\\\"en\", \"k<\\/script>\")" in script, script)
+        assertTrue("typeof r==='function'" in script, "nothing happens in a document without the shim")
     }
 
     @Test
@@ -91,6 +200,12 @@ class AttestedChannelScriptsTest {
         val windows = AttestedChannelScripts.windowsShim("wallet")
         assertTrue("crypto.getRandomValues" in windows, "per-document token")
         assertTrue("doc === " in windows, "resolver checks the document token")
+        assertTrue(AttestedChannelScripts.keyReceiverName("wallet") in windows)
+        assertTrue("hello: origin" in windows, "the shim introduces itself with the origin it read at document start")
+        assertTrue("String(window.origin)" in windows)
+        assertTrue("doc !== token || key !== null" in windows, "the key is accepted once, for this document's token")
+        assertTrue("key: key" in windows, "every request carries the key")
+        assertTrue("e.isTrusted && e.persisted" in windows, "a document restored from the back/forward cache introduces itself again")
     }
 
     @Test
