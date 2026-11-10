@@ -78,6 +78,8 @@ class WindowsWebView2NativeWebView(
             "Failed to create WebView2 (is WebView2 Runtime installed?)"
         }
         messageChannel?.let { WebView2WindowsBridge.registerChannel(handle, it) }
+        // A view created with a JS bridge script has a bridge to drain its window.ipc messages into.
+        if (!jsBridgeScript.isNullOrBlank()) WebView2WindowsBridge.startIpcQueue(handle)
     }
 
     /**
@@ -176,6 +178,10 @@ class WindowsWebView2NativeWebView(
 
     override fun drainIpcMessages(): List<String> =
         if (!isReady()) emptyList() else WebView2WindowsBridge.drainIpcMessages(handle)
+
+    override fun startIpcQueue() {
+        if (isReady()) WebView2WindowsBridge.startIpcQueue(handle)
+    }
 
     override fun addNavigateListener(listener: (String) -> Boolean) {
         if (!isReady()) return

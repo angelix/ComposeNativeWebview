@@ -283,6 +283,7 @@ actual fun ActualWebView(
         if (!nativeWebView.isLiveBackend() || webViewJsBridge == null) {
             return@LaunchedEffect
         }
+        nativeWebView.startIpcQueue()
         while (true) {
             for (raw in nativeWebView.drainIpcMessages()) {
                 parseJsMessage(raw)?.let { webViewJsBridge.dispatch(it) }

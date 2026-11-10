@@ -107,6 +107,9 @@ interface IsolatedNativeWebView {
         callback: (String) -> Unit = {},
     )
 
+    /** The raw `window.ipc` messages the view kept since the last call. */
+    fun drainIpcMessages(): List<String> = emptyList()
+
     fun setCookieNative(
         name: String,
         value: String,

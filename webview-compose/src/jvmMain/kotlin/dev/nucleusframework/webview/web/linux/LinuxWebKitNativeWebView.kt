@@ -71,6 +71,8 @@ class LinuxWebKitNativeWebView(
         )
         require(handle != 0L) { "Failed to create WebKitWebView" }
         messageChannel?.let { WebKitLinuxBridge.registerChannel(handle, it) }
+        // A view created with a JS bridge script has a bridge to drain its window.ipc messages into.
+        if (!jsBridgeScript.isNullOrBlank()) WebKitLinuxBridge.startIpcQueue(handle)
         gtkWidgetHandle = WebKitLinuxBridge.nativeGetGtkWidget(handle)
         require(gtkWidgetHandle != 0L) { "Failed to get GtkWidget handle" }
     }
@@ -156,6 +158,10 @@ class LinuxWebKitNativeWebView(
 
     override fun drainIpcMessages(): List<String> =
         if (!isReady()) emptyList() else WebKitLinuxBridge.drainIpcMessages(handle)
+
+    override fun startIpcQueue() {
+        if (isReady()) WebKitLinuxBridge.startIpcQueue(handle)
+    }
 
     override fun addNavigateListener(listener: (String) -> Boolean) {
         if (!isReady()) return

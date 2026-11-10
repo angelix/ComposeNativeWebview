@@ -384,6 +384,25 @@ internal suspend fun runFullSuite(
             }
         }
     }
+    case("B12", required = setOf(SuiteCapability.IsolatedNativeWebView)) {
+        // window.ipc exists in every page, bridge or not; a view nothing drains must not pile its
+        // messages up in the host.
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "b12-ready",
+                html = """<html><body><div id="marker">b12-ready</div><script>
+                    window.__b12 = 0;
+                    if (window.ipc && window.ipc.postMessage) {
+                        for (var i = 0; i < 3000; i++) { window.ipc.postMessage('flood-' + i); window.__b12++; }
+                    }
+                </script></body></html>""",
+            )
+            assertThat(nv.evalJsUnquotedAsync("String(window.__b12)") == "3000", "the page could not post: ${nv.evalJsUnquotedAsync("String(window.__b12)")}")
+            delay(1_000)
+            val kept = nv.drainIpcMessages()
+            assertThat(kept.isEmpty(), "the view kept ${kept.size} messages")
+        }
+    }
 
     // ── Cookies ──────────────────────────────────────────────────────
     case("K01", required = setOf(SuiteCapability.CookieDomainApi)) {

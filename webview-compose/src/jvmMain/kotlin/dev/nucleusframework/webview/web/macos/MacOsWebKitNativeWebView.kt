@@ -68,6 +68,8 @@ class MacOsWebKitNativeWebView(
         )
         require(handle != 0L) { "Failed to create WKWebView" }
         messageChannel?.let { WebKitMacOsBridge.registerChannel(handle, it) }
+        // A view created with a JS bridge script has a bridge to drain its window.ipc messages into.
+        if (!jsBridgeScript.isNullOrBlank()) WebKitMacOsBridge.startIpcQueue(handle)
         nsViewHandle = WebKitMacOsBridge.nativeGetNsView(handle)
         require(nsViewHandle != 0L) { "Failed to get NSView handle" }
     }
@@ -153,6 +155,10 @@ class MacOsWebKitNativeWebView(
 
     override fun drainIpcMessages(): List<String> =
         if (!isReady()) emptyList() else WebKitMacOsBridge.drainIpcMessages(handle)
+
+    override fun startIpcQueue() {
+        if (isReady()) WebKitMacOsBridge.startIpcQueue(handle)
+    }
 
     override fun addNavigateListener(listener: (String) -> Boolean) {
         if (!isReady()) return

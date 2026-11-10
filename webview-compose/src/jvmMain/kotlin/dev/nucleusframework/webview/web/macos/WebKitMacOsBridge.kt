@@ -4,6 +4,7 @@ import dev.nucleusframework.core.runtime.NativeLibraryLoader
 import dev.nucleusframework.webview.util.KLogger
 import dev.nucleusframework.webview.web.AttestedMessage
 import dev.nucleusframework.webview.web.AttestedMessageChannel
+import dev.nucleusframework.webview.web.IpcInbox
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -31,8 +32,7 @@ internal object WebKitMacOsBridge {
 
     private val navigateHandlers =
         ConcurrentHashMap<Long, MutableList<(String) -> Boolean>>()
-    private val ipcQueues =
-        ConcurrentHashMap<Long, ConcurrentLinkedQueue<String>>()
+    private val ipcInbox = IpcInbox()
     private val jsCallbacks =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<(String) -> Unit>>()
     private val cookieDeferreds =
@@ -57,15 +57,10 @@ internal object WebKitMacOsBridge {
         navigateHandlers[handle]?.remove(listener)
     }
 
-    fun drainIpcMessages(handle: Long): List<String> {
-        val queue = ipcQueues[handle] ?: return emptyList()
-        val drained = ArrayList<String>()
-        while (true) {
-            val next = queue.poll() ?: break
-            drained += next
-        }
-        return drained
-    }
+    /** Starts keeping the `window.ipc` messages of [handle]; until then they are dropped. */
+    fun startIpcQueue(handle: Long) = ipcInbox.open(handle)
+
+    fun drainIpcMessages(handle: Long): List<String> = ipcInbox.drain(handle)
 
     fun registerJsCallback(handle: Long, callback: (String) -> Unit) {
         jsCallbacks.getOrPut(handle) { ConcurrentLinkedQueue() }.add(callback)
@@ -82,7 +77,7 @@ internal object WebKitMacOsBridge {
     fun clearHandle(handle: Long) {
         navigateHandlers.remove(handle)
         channels.remove(handle)
-        ipcQueues.remove(handle)
+        ipcInbox.close(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
             it.complete("[]")
@@ -103,7 +98,7 @@ internal object WebKitMacOsBridge {
 
     @JvmStatic
     fun nativeOnIpcMessage(handle: Long, message: String) {
-        ipcQueues.getOrPut(handle) { ConcurrentLinkedQueue() }.add(message)
+        ipcInbox.offer(handle, message)
     }
 
     @JvmStatic

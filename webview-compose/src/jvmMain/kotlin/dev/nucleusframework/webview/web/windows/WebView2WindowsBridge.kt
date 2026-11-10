@@ -5,6 +5,7 @@ import dev.nucleusframework.webview.util.KLogger
 import dev.nucleusframework.webview.web.AttestedChannelScripts
 import dev.nucleusframework.webview.web.AttestedMessage
 import dev.nucleusframework.webview.web.AttestedMessageChannel
+import dev.nucleusframework.webview.web.IpcInbox
 import dev.nucleusframework.webview.web.WindowsChannelSession
 import dev.nucleusframework.webview.web.WindowsMessage
 import java.security.SecureRandom
@@ -40,8 +41,7 @@ internal object WebView2WindowsBridge {
 
     private val navigateHandlers =
         ConcurrentHashMap<Long, MutableList<(String) -> Boolean>>()
-    private val ipcQueues =
-        ConcurrentHashMap<Long, ConcurrentLinkedQueue<String>>()
+    private val ipcInbox = IpcInbox()
     private val jsCallbacks =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<(String) -> Unit>>()
     private val cookieDeferreds =
@@ -74,15 +74,10 @@ internal object WebView2WindowsBridge {
         navigateHandlers[handle]?.remove(listener)
     }
 
-    fun drainIpcMessages(handle: Long): List<String> {
-        val queue = ipcQueues[handle] ?: return emptyList()
-        val drained = ArrayList<String>()
-        while (true) {
-            val next = queue.poll() ?: break
-            drained += next
-        }
-        return drained
-    }
+    /** Starts keeping the `window.ipc` messages of [handle]; until then they are dropped. */
+    fun startIpcQueue(handle: Long) = ipcInbox.open(handle)
+
+    fun drainIpcMessages(handle: Long): List<String> = ipcInbox.drain(handle)
 
     fun registerJsCallback(handle: Long, callback: (String) -> Unit) {
         jsCallbacks.getOrPut(handle) { ConcurrentLinkedQueue() }.add(callback)
@@ -100,7 +95,7 @@ internal object WebView2WindowsBridge {
         navigateHandlers.remove(handle)
         channels.remove(handle)
         sessions.remove(handle)
-        ipcQueues.remove(handle)
+        ipcInbox.close(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
             it.complete("[]")
@@ -121,7 +116,7 @@ internal object WebView2WindowsBridge {
 
     @JvmStatic
     fun nativeOnIpcMessage(handle: Long, message: String) {
-        ipcQueues.getOrPut(handle) { ConcurrentLinkedQueue() }.add(message)
+        ipcInbox.offer(handle, message)
     }
 
     /**

@@ -144,6 +144,8 @@ private class DesktopIsolatedNativeWebView(
         native.evaluateJavaScript(script, callback)
     }
 
+    override fun drainIpcMessages(): List<String> = native.drainIpcMessages()
+
     override fun setCookieNative(
         name: String,
         value: String,
