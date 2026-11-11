@@ -12,7 +12,9 @@ import dev.nucleusframework.webview.web.windows.WindowsWebView2NativeWebView
 import dev.nucleusframework.window.tao.LocalTaoWindow
 import java.io.File
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 actual fun suiteCapabilities(): Set<SuiteCapability> {
     val os = System.getProperty("os.name", "").lowercase(Locale.ENGLISH)
@@ -63,7 +65,11 @@ actual suspend fun withIsolatedNativeWebView(
     val isLinux = os.contains("nux") || os.contains("nix") || os.contains("aix")
     val isMac = os.contains("mac")
 
-    val native =
+    // WebView2 is created synchronously, while its thread dispatches the messages that arrive meanwhile.
+    // One that runs Compose again (a pointer or redraw message of the window's native-view overlay)
+    // re-enters the dispatcher a suite case runs on, which is not made for that. The window's own main
+    // dispatcher is, so the view is created from there.
+    val native = withContext(Dispatchers.Main) {
         when {
             isLinux ->
                 LinuxWebKitNativeWebView(
@@ -109,6 +115,7 @@ actual suspend fun withIsolatedNativeWebView(
             }
             else -> error("isolated desktop WebView unsupported on $os")
         }
+    }
 
     val isolated = DesktopIsolatedNativeWebView(native)
     try {

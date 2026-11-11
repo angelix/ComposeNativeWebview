@@ -160,6 +160,8 @@ fun VisualSuiteApp(
     }
 
     fun updateCase(id: String, status: CaseStatus, detail: String = "") {
+        // A line per change, so the log of a run that ends early still names the case it ended in.
+        println("SUITE_CASE $id $status ${detail.take(300)}".trimEnd())
         val idx = cases.indexOfFirst { it.id == id }
         if (idx >= 0) {
             cases[idx] = cases[idx].copy(status = status, detail = detail)
