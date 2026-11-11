@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MonotonicFrameClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -373,13 +374,16 @@ actual fun ActualWebView(
         }
     }
 
+    val frameClock = rememberCoroutineScope().coroutineContext[MonotonicFrameClock]
     DisposableEffect(nativeWebView) {
         onDispose {
             state.webView = null
             webViewJsBridge?.webView = null
             (state.cookieManager as? DesktopCookieManager)?.attach(null)
             currentOnDispose(nativeWebView)
-            nativeWebView.destroy()
+            // The page ends here. Its view outlives it for as long as the window may still touch it.
+            nativeWebView.loadHtml("")
+            releaseAfterHostFrames(frameClock) { nativeWebView.destroy() }
         }
     }
 }

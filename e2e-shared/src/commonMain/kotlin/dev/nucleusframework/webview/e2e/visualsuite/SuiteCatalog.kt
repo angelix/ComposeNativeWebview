@@ -88,6 +88,7 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("L07", "Lifecycle", "can recover after Rejected navigation"),
         SuiteCase("L08", "Lifecycle", "isolated destroy() tears down cleanly"),
         SuiteCase("L09", "Lifecycle", "headers load then HTML recovery keeps API live"),
+        SuiteCase("L10", "Lifecycle", "a view leaves composition right after its frame changed"),
         // Attested message channel (engine-attested origin and frame)
         SuiteCase("M01", "Attested channel", "main-frame message carries the page's own origin; reply resolves"),
         SuiteCase("M02", "Attested channel", "cross-origin iframe is never attested as main frame"),

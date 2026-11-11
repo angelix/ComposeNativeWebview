@@ -167,6 +167,7 @@ fun VisualSuiteApp(
     }
 
     val parentHandle = rememberSuiteParentHandle()
+    val scratch = remember { ScratchView() }
 
     LaunchedEffect(Unit) {
         // Give the window a moment to map + embed WebView
@@ -188,6 +189,7 @@ fun VisualSuiteApp(
                 setRejectHosts = { rejectHosts = it },
                 setModifyMap = { modifyMap = it },
                 getOnCreatedFired = { onCreatedFired },
+                scratch = scratch,
                 parentHandle = parentHandle,
             )
         val started = currentTimeMillis()
@@ -266,6 +268,17 @@ fun VisualSuiteApp(
                 .border(1.dp, Color(0xFF243049), RoundedCornerShape(12.dp))
                 .background(Color.White),
         ) {
+            if (scratch.offset) Spacer(Modifier.height(4.dp))
+            if (scratch.shown) {
+                WebView(
+                    state =
+                        rememberWebViewStateWithHTMLData(
+                            data = pageWithMarker("scratch"),
+                            baseUrl = "https://suite.local/scratch",
+                        ),
+                    modifier = Modifier.fillMaxWidth().height(scratch.height.dp),
+                )
+            }
             WebView(
                 state = state,
                 navigator = navigator,
@@ -374,6 +387,17 @@ internal data class SuiteContext(
     val setRejectHosts: (Set<String>) -> Unit,
     val setModifyMap: (Map<String, String>) -> Unit,
     val getOnCreatedFired: () -> Boolean,
+    val scratch: ScratchView,
     /** Tao HWND for isolated Windows WebView2 instances (0 elsewhere). */
     val parentHandle: Long = 0L,
 )
+
+/**
+ * A second WebView above the suite's own, which a case puts into composition and takes out again:
+ * [shown] mounts it, [height] and [offset] move and resize it.
+ */
+internal class ScratchView {
+    var shown by mutableStateOf(false)
+    var offset by mutableStateOf(false)
+    var height by mutableStateOf(120)
+}

@@ -1,5 +1,6 @@
 package dev.nucleusframework.webview.e2e.visualsuite
 
+import androidx.compose.runtime.withFrameNanos
 import composewebview.e2e_shared.generated.resources.Res
 import dev.nucleusframework.webview.cookie.Cookie
 import dev.nucleusframework.webview.jsbridge.IJsMessageHandler
@@ -761,6 +762,25 @@ internal suspend fun runFullSuite(
         loadHtmlAwaitMarker(ctx.navigator, "hdr-recovery")
         val r = evalJs(ctx.navigator, "1+1")
         assertThat(r.contains("2"), "API dead after headers path: $r")
+    }
+
+    // A desktop host queues a view's frame updates and applies them with the frame it presents next,
+    // also for a view it has detached meanwhile. A view freed before that present is touched after it
+    // is gone, which ends the process and with it the suite.
+    case("L10") {
+        val scratch = ctx.scratch
+        repeat(40) { round ->
+            scratch.shown = true
+            repeat(2 + round % 3) { withFrameNanos { } }
+            scratch.offset = !scratch.offset
+            scratch.height = 80 + (round % 5) * 20
+            repeat(round % 3) { withFrameNanos { } }
+            scratch.shown = false
+            repeat(1 + round % 2) { withFrameNanos { } }
+        }
+        scratch.offset = false
+        val r = evalJs(ctx.navigator, "1+1")
+        assertThat(r.contains("2"), "main view dead after the scratch view's rounds: $r")
     }
 
     // ── Attested channel ─────────────────────────────────────────────
