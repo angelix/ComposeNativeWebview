@@ -2,6 +2,8 @@ package dev.nucleusframework.webview.web.linux
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.NativeWebView
 import dev.nucleusframework.window.tao.NucleusPlatformView
 import kotlinx.coroutines.CompletableDeferred
@@ -24,6 +26,7 @@ class LinuxWebKitNativeWebView(
     zoomLevel: Double = 1.0,
     transparent: Boolean = false,
     backgroundColor: Color = Color.White,
+    messageChannel: AttestedMessageChannel? = null,
 ) : NativeWebView() {
     private val handle: Long
     private val gtkWidgetHandle: Long
@@ -61,8 +64,15 @@ class LinuxWebKitNativeWebView(
             bgG = g,
             bgB = b,
             bgA = a,
+            channelName = messageChannel?.name,
+            channelWorld = messageChannel?.let { AttestedChannelScripts.LINUX_WORLD },
+            channelRelay = messageChannel?.let { AttestedChannelScripts.linuxRelay(it.name) },
+            channelShim = messageChannel?.let { AttestedChannelScripts.linuxShim(it.name) },
         )
         require(handle != 0L) { "Failed to create WebKitWebView" }
+        messageChannel?.let { WebKitLinuxBridge.registerChannel(handle, it) }
+        // A view created with a JS bridge script has a bridge to drain its window.ipc messages into.
+        if (!jsBridgeScript.isNullOrBlank()) WebKitLinuxBridge.startIpcQueue(handle)
         gtkWidgetHandle = WebKitLinuxBridge.nativeGetGtkWidget(handle)
         require(gtkWidgetHandle != 0L) { "Failed to get GtkWidget handle" }
     }
@@ -149,6 +159,10 @@ class LinuxWebKitNativeWebView(
     override fun drainIpcMessages(): List<String> =
         if (!isReady()) emptyList() else WebKitLinuxBridge.drainIpcMessages(handle)
 
+    override fun startIpcQueue() {
+        if (isReady()) WebKitLinuxBridge.startIpcQueue(handle)
+    }
+
     override fun addNavigateListener(listener: (String) -> Boolean) {
         if (!isReady()) return
         WebKitLinuxBridge.addNavigateListener(handle, listener)
@@ -196,14 +210,16 @@ class LinuxWebKitNativeWebView(
         )
     }
 
-    fun removeAllCookiesNative() {
+    /** Returns once the engine reports the cookies gone. */
+    suspend fun removeAllCookiesNative() {
         if (!isReady()) return
-        WebKitLinuxBridge.nativeRemoveAllCookies(handle)
+        WebKitLinuxBridge.removeAllCookies(handle)
     }
 
-    fun removeCookiesForUrlNative(url: String) {
+    /** Returns once the engine reports the cookies of [url]'s host gone. */
+    suspend fun removeCookiesForUrlNative(url: String) {
         if (!isReady()) return
-        WebKitLinuxBridge.nativeRemoveCookiesForUrl(handle, url)
+        WebKitLinuxBridge.removeCookiesForUrl(handle, url)
     }
 
     fun setZoomLevel(zoom: Double) {

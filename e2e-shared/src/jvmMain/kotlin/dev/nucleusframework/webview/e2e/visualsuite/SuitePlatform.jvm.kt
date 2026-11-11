@@ -2,6 +2,7 @@ package dev.nucleusframework.webview.e2e.visualsuite
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.IWebView
 import dev.nucleusframework.webview.web.WebViewState
 import dev.nucleusframework.webview.web.linux.LinuxWebKitNativeWebView
@@ -13,8 +14,11 @@ import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.delay
 
-actual fun suiteCapabilities(): Set<SuiteCapability> =
-    setOf(
+actual fun suiteCapabilities(): Set<SuiteCapability> {
+    val os = System.getProperty("os.name", "").lowercase(Locale.ENGLISH)
+    val isMac = os.contains("mac")
+    val isWindows = os.contains("win")
+    return setOf(
         SuiteCapability.HistoryNavigation,
         SuiteCapability.DataUrlNavigation,
         SuiteCapability.CookieDomainApi,
@@ -23,7 +27,12 @@ actual fun suiteCapabilities(): Set<SuiteCapability> =
         SuiteCapability.IsolatedNativeWebView,
         SuiteCapability.DesktopNativeControls,
         SuiteCapability.DocumentStartJsBridge,
-    )
+        SuiteCapability.AttestedMessageChannel,
+    ) +
+        (if (isMac || isWindows) setOf(SuiteCapability.DesktopSafetyDefaults) else emptySet()) +
+        (if (isMac) setOf(SuiteCapability.AttestedSubframeDelivery) else emptySet()) +
+        (if (!isWindows) setOf(SuiteCapability.LoadHtmlBaseUriOrigin) else emptySet())
+}
 
 actual fun isPlatformWebViewReady(state: WebViewState): Boolean {
     val nv = state.webView?.nativeWebView ?: return false
@@ -46,6 +55,7 @@ actual suspend fun withIsolatedNativeWebView(
     incognito: Boolean,
     dataDirectory: String?,
     enableDevtools: Boolean,
+    messageChannel: AttestedMessageChannel?,
     block: suspend (IsolatedNativeWebView) -> Unit,
 ) {
     val os = System.getProperty("os.name", "").lowercase(Locale.ENGLISH)
@@ -66,6 +76,7 @@ actual suspend fun withIsolatedNativeWebView(
                     zoomLevel = 1.0,
                     transparent = false,
                     backgroundColor = Color.White,
+                    messageChannel = messageChannel,
                 )
             isMac ->
                 MacOsWebKitNativeWebView(
@@ -78,6 +89,7 @@ actual suspend fun withIsolatedNativeWebView(
                     zoomLevel = 1.0,
                     transparent = false,
                     backgroundColor = Color.White,
+                    messageChannel = messageChannel,
                 )
             isWin -> {
                 require(parentHandle != 0L) { "parent HWND required for isolated Windows WebView2" }
@@ -92,6 +104,7 @@ actual suspend fun withIsolatedNativeWebView(
                     zoomLevel = 1.0,
                     transparent = false,
                     backgroundColor = Color.White,
+                    messageChannel = messageChannel,
                 )
             }
             else -> error("isolated desktop WebView unsupported on $os")
@@ -130,6 +143,8 @@ private class DesktopIsolatedNativeWebView(
     ) {
         native.evaluateJavaScript(script, callback)
     }
+
+    override fun drainIpcMessages(): List<String> = native.drainIpcMessages()
 
     override fun setCookieNative(
         name: String,

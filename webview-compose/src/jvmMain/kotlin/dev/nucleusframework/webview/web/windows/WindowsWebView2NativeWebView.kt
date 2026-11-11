@@ -2,6 +2,8 @@ package dev.nucleusframework.webview.web.windows
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.NativeWebView
 import dev.nucleusframework.window.tao.NucleusPlatformView
 import kotlinx.coroutines.CompletableDeferred
@@ -32,6 +34,7 @@ class WindowsWebView2NativeWebView(
     zoomLevel: Double = 1.0,
     transparent: Boolean = false,
     backgroundColor: Color = Color.White,
+    messageChannel: AttestedMessageChannel? = null,
 ) : NativeWebView() {
     private val handle: Long
     private var released = false
@@ -69,10 +72,14 @@ class WindowsWebView2NativeWebView(
             bgG = g,
             bgB = b,
             bgA = a,
+            channelShim = messageChannel?.let { AttestedChannelScripts.windowsShim(it.name) },
         )
         require(handle != 0L) {
             "Failed to create WebView2 (is WebView2 Runtime installed?)"
         }
+        messageChannel?.let { WebView2WindowsBridge.registerChannel(handle, it) }
+        // A view created with a JS bridge script has a bridge to drain its window.ipc messages into.
+        if (!jsBridgeScript.isNullOrBlank()) WebView2WindowsBridge.startIpcQueue(handle)
     }
 
     /**
@@ -172,6 +179,10 @@ class WindowsWebView2NativeWebView(
     override fun drainIpcMessages(): List<String> =
         if (!isReady()) emptyList() else WebView2WindowsBridge.drainIpcMessages(handle)
 
+    override fun startIpcQueue() {
+        if (isReady()) WebView2WindowsBridge.startIpcQueue(handle)
+    }
+
     override fun addNavigateListener(listener: (String) -> Boolean) {
         if (!isReady()) return
         WebView2WindowsBridge.addNavigateListener(handle, listener)
@@ -216,14 +227,16 @@ class WindowsWebView2NativeWebView(
         )
     }
 
-    fun removeAllCookiesNative() {
+    /** Returns once the engine reports the cookies gone. */
+    suspend fun removeAllCookiesNative() {
         if (!isReady()) return
-        WebView2WindowsBridge.nativeRemoveAllCookies(handle)
+        WebView2WindowsBridge.removeAllCookies(handle)
     }
 
-    fun removeCookiesForUrlNative(url: String) {
+    /** Returns once the engine reports the cookies of [url]'s host gone. */
+    suspend fun removeCookiesForUrlNative(url: String) {
         if (!isReady()) return
-        WebView2WindowsBridge.nativeRemoveCookiesForUrl(handle, url)
+        WebView2WindowsBridge.removeCookiesForUrl(handle, url)
     }
 
     fun setZoomLevel(zoom: Double) {

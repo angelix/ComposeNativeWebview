@@ -23,6 +23,11 @@ typedef struct {
     WebKitWebContext *context;
     gulong decide_policy_handler;
     gulong ipc_handler;
+    /* Attested message channel: its with-reply handler, the page promises still waiting for a
+     * reply (reply id -> WebKitScriptMessageReply), and the context reply values are made in. */
+    gulong channel_handler;
+    GHashTable *pending_replies;
+    JSCContext *reply_context;
 } ComposeWebViewState;
 
 /* jni_bridge.c */
@@ -31,9 +36,14 @@ void compose_webview_ensure_bridge_methods(JNIEnv *env);
 jclass compose_webview_bridge_class(void);
 jmethodID compose_webview_on_navigate(void);
 jmethodID compose_webview_on_ipc(void);
+jmethodID compose_webview_on_channel_message(void);
 jmethodID compose_webview_on_js_result(void);
 jmethodID compose_webview_on_cookies(void);
+void compose_webview_deliver_cookies_removed(jlong request_id);
 jmethodID compose_webview_on_screenshot(void);
+
+jstring compose_webview_utf8_to_jstring(JNIEnv *env, const gchar *utf8);
+gchar *compose_webview_jstring_to_utf8(JNIEnv *env, jstring js);
 
 /* view_lifecycle.c */
 ComposeWebViewState *compose_webview_state_from_handle(jlong handle);
@@ -48,6 +58,11 @@ gboolean compose_webview_on_decide_policy(
 void compose_webview_on_script_message(
     WebKitUserContentManager *manager,
     WebKitJavascriptResult *js_result,
+    gpointer user_data);
+gboolean compose_webview_on_channel_script_message(
+    WebKitUserContentManager *manager,
+    JSCValue *value,
+    WebKitScriptMessageReply *reply,
     gpointer user_data);
 
 #endif /* COMPOSE_WEBVIEW_INTERNAL_H */

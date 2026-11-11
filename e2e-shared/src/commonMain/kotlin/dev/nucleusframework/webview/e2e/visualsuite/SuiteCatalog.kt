@@ -51,6 +51,7 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("B09", "JS Bridge", "rapid IPC burst (×12) drains without drop"),
         SuiteCase("B10", "JS Bridge", "bridge callable from an inline script (document start)"),
         SuiteCase("B11", "JS Bridge", "bridge survives loads that keep the same URL (×3)"),
+        SuiteCase("B12", "JS Bridge", "a view with no JS bridge keeps none of the page's ipc messages"),
         // Cookies (Wry: set/get/clear_for_url/clear_all + attributes)
         SuiteCase("K01", "Cookies", "setCookie + getCookies finds cookie"),
         SuiteCase("K02", "Cookies", "removeCookies drops cookie"),
@@ -59,6 +60,7 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("K05", "Cookies", "cookie path/domain attributes round-trip"),
         SuiteCase("K06", "Cookies", "multiple cookies coexist for same URL"),
         SuiteCase("K07", "Cookies", "incognito jar isolated from default jar"),
+        SuiteCase("K08", "Cookies", "removeAllCookies and removeCookies have finished when they return"),
         // Interceptor (Wry: NavigationHandler)
         SuiteCase("I01", "Interceptor", "Reject blocks blocked host"),
         SuiteCase("I02", "Interceptor", "Allow permits navigation"),
@@ -86,6 +88,21 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("L07", "Lifecycle", "can recover after Rejected navigation"),
         SuiteCase("L08", "Lifecycle", "isolated destroy() tears down cleanly"),
         SuiteCase("L09", "Lifecycle", "headers load then HTML recovery keeps API live"),
+        SuiteCase("L10", "Lifecycle", "a view leaves composition right after its frame changed"),
+        // Attested message channel (engine-attested origin and frame)
+        SuiteCase("M01", "Attested channel", "main-frame message carries the page's own origin; reply resolves"),
+        SuiteCase("M02", "Attested channel", "cross-origin iframe is never attested as main frame"),
+        SuiteCase("M03", "Attested channel", "stale reply after navigation does not resolve the new document"),
+        SuiteCase("M04", "Attested channel", "reply held for a destroyed WebView does not resolve a later WebView"),
+        SuiteCase("M06", "Attested channel", "page cannot replace the channel object or its reply resolver"),
+        SuiteCase("M07", "Attested channel", "origin is serialised like a browser's; an opaque document is null"),
+        SuiteCase("M08", "Attested channel", "a sub-frame load or a navigation inside the page does not cut the channel"),
+        SuiteCase("M09", "Attested channel", "the channel is there on a page whose CSP allows no script of its own"),
+        SuiteCase("M10", "Attested channel", "a page that rewrites itself with document.open() keeps the channel"),
+        // Desktop safety defaults
+        SuiteCase("D01", "Safety", "getUserMedia is denied without a prompt"),
+        SuiteCase("D02", "Safety", "main-frame window.open of an https URL loads in the same view"),
+        SuiteCase("D03", "Safety", "an iframe's window.open does not navigate the top view"),
         // Rendering — measurements, not thresholds: the backend embeds a real
         // native WebView and never throttles it, so these report what the host
         // actually achieves (see README "Rendering model & frame rate").

@@ -87,15 +87,21 @@ internal fun assertThat(
     if (!condition) error(message)
 }
 
+/** The longest a case may take. One that waits on something that never comes fails, and the suite goes on. */
+private const val CASE_TIMEOUT_MS = 120_000L
+
 internal suspend fun <T> runCase(
     onStatus: (CaseStatus, String) -> Unit,
     block: suspend () -> T,
 ): T? {
     onStatus(CaseStatus.Running, "")
     return try {
-        val result = block()
+        val result = withTimeout(CASE_TIMEOUT_MS) { block() }
         onStatus(CaseStatus.Passed, "ok")
         result
+    } catch (skip: SuiteSkip) {
+        onStatus(CaseStatus.Skipped, skip.message ?: "not measurable")
+        null
     } catch (t: Throwable) {
         onStatus(CaseStatus.Failed, t.message ?: t::class.simpleName ?: "error")
         null
@@ -121,7 +127,7 @@ internal suspend fun runMeasuredCase(
 ) {
     onStatus(CaseStatus.Running, "")
     try {
-        onStatus(CaseStatus.Passed, block())
+        onStatus(CaseStatus.Passed, withTimeout(CASE_TIMEOUT_MS) { block() })
     } catch (skip: SuiteSkip) {
         onStatus(CaseStatus.Skipped, skip.message ?: "not measurable")
     } catch (t: Throwable) {
@@ -219,3 +225,6 @@ internal class IntCounter {
         return value
     }
 }
+
+internal fun String.encodeURLComponentForSuite(): String =
+    buildString { for (c in this@encodeURLComponentForSuite) { if (c.isLetterOrDigit() || c in "-_.!~*'()") append(c) else c.toString().encodeToByteArray().forEach { append('%'); append(((it.toInt() and 0xFF) + 0x100).toString(16).substring(1).uppercase()) } } }

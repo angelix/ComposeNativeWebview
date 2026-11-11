@@ -39,6 +39,13 @@ actual open class NativeWebView {
 
     open fun drainIpcMessages(): List<String> = emptyList()
 
+    /**
+     * Tells the backend that [drainIpcMessages] will be called from now on. Until then a live
+     * backend drops `window.ipc` messages instead of queueing them, unless it was created with a
+     * JS bridge script.
+     */
+    open fun startIpcQueue() = Unit
+
     open fun addNavigateListener(listener: (String) -> Boolean) = Unit
 
     open fun removeNavigateListener(listener: (String) -> Boolean) = Unit

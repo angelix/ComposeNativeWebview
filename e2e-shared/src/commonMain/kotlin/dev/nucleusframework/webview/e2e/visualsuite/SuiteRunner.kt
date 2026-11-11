@@ -1,9 +1,12 @@
 package dev.nucleusframework.webview.e2e.visualsuite
 
+import androidx.compose.runtime.withFrameNanos
 import composewebview.e2e_shared.generated.resources.Res
 import dev.nucleusframework.webview.cookie.Cookie
 import dev.nucleusframework.webview.jsbridge.IJsMessageHandler
 import dev.nucleusframework.webview.jsbridge.JsMessage
+import dev.nucleusframework.webview.web.AttestedMessage
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.LoadingState
 import dev.nucleusframework.webview.web.WebContent
 import dev.nucleusframework.webview.web.WebViewFileReadType
@@ -382,6 +385,25 @@ internal suspend fun runFullSuite(
             }
         }
     }
+    case("B12", required = setOf(SuiteCapability.IsolatedNativeWebView)) {
+        // window.ipc exists in every page, bridge or not; a view nothing drains must not pile its
+        // messages up in the host.
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "b12-ready",
+                html = """<html><body><div id="marker">b12-ready</div><script>
+                    window.__b12 = 0;
+                    if (window.ipc && window.ipc.postMessage) {
+                        for (var i = 0; i < 3000; i++) { window.ipc.postMessage('flood-' + i); window.__b12++; }
+                    }
+                </script></body></html>""",
+            )
+            assertThat(nv.evalJsUnquotedAsync("String(window.__b12)") == "3000", "the page could not post: ${nv.evalJsUnquotedAsync("String(window.__b12)")}")
+            delay(1_000)
+            val kept = nv.drainIpcMessages()
+            assertThat(kept.isEmpty(), "the view kept ${kept.size} messages")
+        }
+    }
 
     // ── Cookies ──────────────────────────────────────────────────────
     case("K01", required = setOf(SuiteCapability.CookieDomainApi)) {
@@ -498,6 +520,31 @@ internal suspend fun runFullSuite(
                 mainCookies.none { it.name == "incog_only" },
                 "incognito cookie leaked into default jar: $mainCookies",
             )
+        }
+    }
+    case("K08", required = setOf(SuiteCapability.CookieDomainApi)) {
+        // A host that clears the jar and reloads at once must not send the old cookies: the cookie
+        // has to be gone by the time the call returns, with no wait in between.
+        val url = "https://finished.suite.local/"
+        suspend fun plant(name: String) {
+            ctx.state.cookieManager.setCookie(
+                url,
+                Cookie(name = name, value = "v", domain = "finished.suite.local", path = "/", isSecure = false),
+            )
+            awaitUntil(10_000, "cookie $name present") {
+                ctx.state.cookieManager.getCookies(url).any { it.name == name }
+            }
+        }
+        repeat(3) { round ->
+            plant("suite_k8_all")
+            ctx.state.cookieManager.removeAllCookies()
+            val afterAll = ctx.state.cookieManager.getCookies(url).filter { it.name == "suite_k8_all" }
+            assertThat(afterAll.isEmpty(), "round $round: removeAllCookies returned with $afterAll still in the jar")
+
+            plant("suite_k8_url")
+            ctx.state.cookieManager.removeCookies(url)
+            val afterUrl = ctx.state.cookieManager.getCookies(url).filter { it.name == "suite_k8_url" }
+            assertThat(afterUrl.isEmpty(), "round $round: removeCookies returned with $afterUrl still in the jar")
         }
     }
 
@@ -715,6 +762,435 @@ internal suspend fun runFullSuite(
         loadHtmlAwaitMarker(ctx.navigator, "hdr-recovery")
         val r = evalJs(ctx.navigator, "1+1")
         assertThat(r.contains("2"), "API dead after headers path: $r")
+    }
+
+    // A desktop host queues a view's frame updates and applies them with the frame it presents next,
+    // also for a view it has detached meanwhile. A view freed before that present is touched after it
+    // is gone, which ends the process and with it the suite.
+    case("L10") {
+        val scratch = ctx.scratch
+        repeat(40) { round ->
+            scratch.shown = true
+            repeat(2 + round % 3) { withFrameNanos { } }
+            scratch.offset = !scratch.offset
+            scratch.height = 80 + (round % 5) * 20
+            repeat(round % 3) { withFrameNanos { } }
+            scratch.shown = false
+            repeat(1 + round % 2) { withFrameNanos { } }
+        }
+        scratch.offset = false
+        val r = evalJs(ctx.navigator, "1+1")
+        assertThat(r.contains("2"), "main view dead after the scratch view's rounds: $r")
+    }
+
+    // ── Attested channel ─────────────────────────────────────────────
+    case("M01", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply ->
+            received += msg
+            reply("pong:" + msg.body)
+        }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m01-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m01-ready</div><script>
+                    // U+1F98A (a non-BMP character) followed by text that must survive the round trip.
+                    var body = 'hi\uD83E\uDD8Axyz';
+                    window.suiteChan.postMessage(body).then(function (r) { window.__m01 = (r === 'pong:' + body) ? 'ok' : 'bad:' + r.length; });
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("window.__m01 || ''") == "ok" }
+            val msg = received.single()
+            assertThat(msg.body == "hi\uD83E\uDD8Axyz", "body=${msg.body}")
+            val pageOrigin = nv.evalJsUnquotedAsync("location.origin")
+            assertThat(msg.origin == pageOrigin, "origin=${msg.origin}, page location.origin=$pageOrigin")
+            assertThat(
+                SuiteCapability.LoadHtmlBaseUriOrigin !in caps || msg.origin == "https://main.suite.test",
+                "origin=${msg.origin}, expected the base URI's origin",
+            )
+            assertThat(msg.isMainFrame, "main frame not attested")
+        }
+    }
+    case("M02", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("x") }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            // The frame tries every route to the host: the WebKit handler, the WebView2 channel
+            // (introducing itself as the embedding page, then posting under a made-up key), the parent's
+            // frozen object, and the Linux relay (offering a pipe of its own to a relay in its own frame
+            // and to the parent's, and posting a request on it). It then tells the top page that it ran
+            // and whether it saw the WebView2 channel, so the case cannot pass because the frame never
+            // executed.
+            val frame = "<script>" +
+                "try{window.webkit.messageHandlers.suiteChan.postMessage('from-frame')}catch(e){}" +
+                "try{var wv=window.chrome.webview;" +
+                "wv.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',doc:'frame',hello:'https://main.suite.test'}));" +
+                "wv.postMessage(JSON.stringify({__nucleusChannel:'suiteChan',doc:'frame',key:'forged',id:1,body:'from-frame'}))}catch(e){}" +
+                "try{window.parent.suiteChan.postMessage('from-frame')}catch(e){}" +
+                "var pipe=new EventTarget();" +
+                "function offer(w){w.dispatchEvent(new FocusEvent('__nucleusChannelHello_suiteChan',{cancelable:true,relatedTarget:pipe}))}" +
+                "function ask(i){pipe.dispatchEvent(new CustomEvent('request',{detail:JSON.stringify({id:i,body:'from-frame'})}))}" +
+                "try{offer(window);ask(1)}catch(e){}" +
+                "try{offer(window.parent);ask(2)}catch(e){}" +
+                "try{window.webkit.messageHandlers.suiteChan.postMessage(JSON.stringify({origin:'https://main.suite.test',isMainFrame:true,body:'from-frame'}))}catch(e){}" +
+                "parent.postMessage({m02ran:true,hasWebview:!!(window.chrome&&window.chrome.webview)},'*');" +
+                "</script>"
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m02-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m02-ready</div><script>
+                    window.addEventListener('message', function (e) {
+                        if (e.data && e.data.m02ran) { document.__m02ran = 'hasWebview=' + e.data.hasWebview; }
+                    });
+                    </script><iframe src="data:text/html,${frame.encodeURLComponentForSuite()}"></iframe></body></html>""",
+            )
+            awaitUntil(10_000, "frame ran") { nv.evalJsUnquotedAsync("document.__m02ran || ''").isNotEmpty() }
+            val frameReport = nv.evalJsUnquotedAsync("document.__m02ran")
+            delay(2_000)
+            val fromFrame = received.filter { it.body == "from-frame" }
+            assertThat(
+                SuiteCapability.AttestedSubframeDelivery !in caps || fromFrame.isNotEmpty(),
+                "the frame message never arrived, so nothing was attested ($frameReport)",
+            )
+            assertThat(
+                SuiteCapability.AttestedSubframeDelivery in caps || fromFrame.isEmpty(),
+                "a platform without subframe delivery attested a frame message ($frameReport): $fromFrame",
+            )
+            assertThat(fromFrame.none { it.isMainFrame }, "a frame message was attested as main frame ($frameReport): $fromFrame")
+            assertThat(fromFrame.all { it.origin == "null" }, "a frame message carried a non-opaque origin ($frameReport): $fromFrame")
+            // The top page sends nothing in this case, so nothing at all may claim the main frame or its origin.
+            assertThat(received.none { it.isMainFrame }, "a message was attested as main frame ($frameReport): $received")
+            assertThat(received.all { it.origin == "null" }, "a message carried a non-opaque origin ($frameReport): $received")
+        }
+    }
+    case("M03", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val replies = mutableListOf<(String) -> Unit>()
+        val channel = AttestedMessageChannel("suiteChan") { _, reply -> replies += reply }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            val page = { tag: String ->
+                """<html><body><div id="marker">$tag</div><script>
+                    window.suiteChan.postMessage('$tag').then(function (r) { document.__m03 = r; });
+                </script></body></html>"""
+            }
+            nv.loadHtmlAwaitMarker(expectedMarker = "m03-a", baseUri = "https://main.suite.test/", html = page("m03-a"))
+            awaitUntil(10_000, "first request") { replies.size == 1 }
+            // Same origin ("null" on Windows, where loadHtml uses a data: URL), fresh document: its first
+            // request reuses id 1 on Windows.
+            nv.loadHtmlAwaitMarker(expectedMarker = "m03-b", baseUri = "https://main.suite.test/", html = page("m03-b"))
+            awaitUntil(10_000, "second request") { replies.size == 2 }
+            replies[0]("stale")
+            delay(1_000)
+            assertThat(nv.evalJsUnquotedAsync("String(document.__m03)") == "undefined", "stale reply resolved the new document")
+            replies[1]("fresh")
+            awaitUntil(10_000, "fresh reply") { nv.evalJsUnquotedAsync("String(document.__m03)") == "fresh" }
+        }
+    }
+    case("M04", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        // A reply held for a destroyed WebView must not resolve a request of a later WebView, which may
+        // reuse the destroyed one's native memory address.
+        val heldForFirst = mutableListOf<(String) -> Unit>()
+        withIsolatedNativeWebView(
+            parentHandle = ctx.parentHandle,
+            messageChannel = AttestedMessageChannel("suiteChan") { _, reply -> heldForFirst += reply },
+        ) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m04-a",
+                baseUri = "https://first.suite.test/",
+                html = """<html><body><div id="marker">m04-a</div><script>
+                    window.suiteChan.postMessage('first');
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "first request") { heldForFirst.size == 1 }
+        }
+        val heldForSecond = mutableListOf<(String) -> Unit>()
+        withIsolatedNativeWebView(
+            parentHandle = ctx.parentHandle,
+            messageChannel = AttestedMessageChannel("suiteChan") { _, reply -> heldForSecond += reply },
+        ) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m04-b",
+                baseUri = "https://second.suite.test/",
+                html = """<html><body><div id="marker">m04-b</div><script>
+                    window.suiteChan.postMessage('second').then(function (r) { document.__m04 = r; });
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "second request") { heldForSecond.size == 1 }
+            heldForFirst.single()("from-first")
+            delay(1_000)
+            assertThat(nv.evalJsUnquotedAsync("String(document.__m04)") == "undefined", "a reply for a destroyed WebView resolved a later one")
+            heldForSecond.single()("from-second")
+            awaitUntil(10_000, "second reply") { nv.evalJsUnquotedAsync("String(document.__m04)") == "from-second" }
+        }
+    }
+    case("M06", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("real") }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m06-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m06-ready</div><script>
+                    try { window.suiteChan = { postMessage: function () { return Promise.resolve('fake'); } }; } catch (e) {}
+                    try { Object.defineProperty(window, 'suiteChan', { value: 1 }); } catch (e) {}
+                    try { window.suiteChan.postMessage = function () { return Promise.resolve('fake'); }; } catch (e) {}
+                    // The Windows reply resolver: replace, redefine and delete it (a replaced resolver would
+                    // swallow the real reply), then call it with a forged document token for the pending
+                    // request (id 1). macOS has no resolver; there these only touch a page global.
+                    var rn = '__nucleusChannelResolve_suiteChan';
+                    var resolver = window[rn];
+                    var swallow = function () {};
+                    try { window[rn] = swallow; } catch (e) {}
+                    try { Object.defineProperty(window, rn, { value: swallow }); } catch (e) {}
+                    try { delete window[rn]; } catch (e) {}
+                    // What the page says about itself must not change what the host is told.
+                    try { window.origin = 'https://forged.suite.test'; } catch (e) {}
+                    try { Object.defineProperty(window, 'origin', { value: 'https://forged.suite.test' }); } catch (e) {}
+                    try { Object.defineProperty(window, 'top', { value: null }); } catch (e) {}
+                    // Windows: a second hello under another origin, a request under a made-up key, and a
+                    // key the page hands itself. Elsewhere chrome.webview does not exist.
+                    try {
+                        window.chrome.webview.postMessage(JSON.stringify({ __nucleusChannel: 'suiteChan', doc: 'forged', hello: 'https://forged.suite.test' }));
+                        window.chrome.webview.postMessage(JSON.stringify({ __nucleusChannel: 'suiteChan', doc: 'forged', key: 'forged', id: 9, body: 'forged-request' }));
+                    } catch (e) {}
+                    try { window['__nucleusChannelKeyReceiver_suiteChan']('forged', 'forged'); } catch (e) {}
+                    // The Linux relay and shim: offer the relay a pipe of the page's own and post a request
+                    // on it, ask the shim for its pipe the way a starting relay does, and (below) forge the
+                    // reply to the pending request (id 1) wherever the page can dispatch one. Elsewhere
+                    // these are plain DOM events.
+                    var ownPipe = new EventTarget();
+                    function fire(target, type, detail) { try { target.dispatchEvent(new CustomEvent(type, { detail: detail })); } catch (e) {} }
+                    try {
+                        window.addEventListener('__nucleusChannelHello_suiteChan', function (e) {
+                            if (e.relatedTarget !== ownPipe) { window.__m06pipe = 'handed over'; }
+                        }, true);
+                        window.dispatchEvent(new FocusEvent('__nucleusChannelHello_suiteChan', { cancelable: true, relatedTarget: ownPipe }));
+                    } catch (e) {}
+                    fire(ownPipe, 'request', JSON.stringify({ id: 7, body: 'forged-request' }));
+                    fire(window, '__nucleusChannelRelay_suiteChan');
+                    // The relay's own handler, called from the page with a made-up envelope. On macOS the
+                    // page reaches the channel's handler this way, and the envelope is just a message body.
+                    try {
+                        window.webkit.messageHandlers.suiteChan.postMessage(
+                            JSON.stringify({ origin: 'https://forged.suite.test', isMainFrame: true, body: 'forged-envelope' }));
+                    } catch (e) {}
+                    window.suiteChan.postMessage('x').then(function (r) { window.__m06 = r; });
+                    try { if (typeof resolver === 'function') { resolver('forged-token', 1, 'forged'); } } catch (e) {}
+                    var forgedReply = JSON.stringify({ id: 1, ok: true, value: 'forged' });
+                    fire(window, 'reply', forgedReply);
+                    fire(ownPipe, 'reply', forgedReply);
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("String(window.__m06)") != "undefined" }
+            assertThat(nv.evalJsUnquotedAsync("String(window.__m06)") == "real", "page replaced the channel: ${nv.evalJsUnquotedAsync("String(window.__m06)")}")
+            assertThat(nv.evalJsUnquotedAsync("String(window.__m06pipe)") == "undefined", "the page was handed the shim's pipe")
+            val pageOrigin = nv.evalJsUnquotedAsync("location.origin")
+            assertThat(received.count { it.body == "x" } == 1, "host received $received")
+            assertThat(received.none { it.body == "forged-request" || it.body == "forged-envelope" }, "a forged message reached the host: $received")
+            assertThat(received.all { it.origin == pageOrigin && it.isMainFrame }, "a message carried an origin other than $pageOrigin: $received")
+        }
+    }
+    case("M07", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("ok") }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            // Base URI to the origin a browser serialises for it; without LoadHtmlBaseUriOrigin every
+            // loadHtml document is opaque. A null base URI is an opaque document everywhere.
+            val cases = listOf(
+                "http://127.0.0.1:8123/path?q=1#f" to "http://127.0.0.1:8123",
+                "https://PORT.suite.test:443/" to "https://port.suite.test",
+                "http://port.suite.test:80/" to "http://port.suite.test",
+                null to "null",
+            )
+            cases.forEachIndexed { i, (baseUri, serialised) ->
+                val tag = "m07-$i"
+                nv.loadHtmlAwaitMarker(
+                    expectedMarker = tag,
+                    baseUri = baseUri,
+                    html = """<html><body><div id="marker">$tag</div><script>
+                        window.suiteChan.postMessage('$tag').then(function (r) { window.__m07 = r; });
+                    </script></body></html>""",
+                )
+                awaitUntil(10_000, "reply $tag") { nv.evalJsUnquotedAsync("window.__m07 || ''") == "ok" }
+                val msg = received.single { it.body == tag }
+                val expected = if (SuiteCapability.LoadHtmlBaseUriOrigin in caps) serialised else "null"
+                assertThat(msg.origin == expected, "base URI $baseUri: origin=${msg.origin}, expected $expected")
+                assertThat(msg.isMainFrame, "base URI $baseUri: main frame not attested")
+            }
+        }
+    }
+    case("M08", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val requests = mutableListOf<Pair<AttestedMessage, (String) -> Unit>>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> requests += msg to reply }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m08-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m08-ready</div><script>
+                    window.suiteChan.postMessage('before').then(function (r) { window.__m08before = r; });
+                    window.addEventListener('message', function (e) {
+                        if (e.data === 'm08-frame') { document.__m08frame = 'loaded'; }
+                    });
+                    window.__m08change = function () {
+                        var frame = document.createElement('iframe');
+                        frame.src = 'data:text/html,' + encodeURIComponent("<script>parent.postMessage('m08-frame','*')<\/script>");
+                        document.body.appendChild(frame);
+                        location.hash = 'm08';
+                    };
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "first request") { requests.size == 1 }
+            // Neither a document loading in a sub-frame nor a navigation inside the page is a new
+            // top-level document: the pending reply still lands, and the page can still post.
+            nv.evalJsUnquotedAsync("window.__m08change(); 'x'")
+            awaitUntil(10_000, "frame loaded") { nv.evalJsUnquotedAsync("document.__m08frame || ''") == "loaded" }
+            nv.evalJsUnquotedAsync("window.suiteChan.postMessage('after').then(function (r) { window.__m08after = r; }); 'x'")
+            awaitUntil(10_000, "second request") { requests.size == 2 }
+            assertThat(requests.map { it.first.body } == listOf("before", "after"), "requests=${requests.map { it.first }}")
+            assertThat(requests.all { it.first.isMainFrame && it.first.origin == requests[0].first.origin }, "requests=${requests.map { it.first }}")
+            requests[0].second("reply-before")
+            requests[1].second("reply-after")
+            awaitUntil(10_000, "replies") {
+                nv.evalJsUnquotedAsync("String(window.__m08before) + '/' + String(window.__m08after)") == "reply-before/reply-after"
+            }
+        }
+    }
+    case("M09", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val received = mutableListOf<AttestedMessage>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> received += msg; reply("csp-ok") }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            // The page's policy stops its own inline script, as a nonce-based policy stops any script
+            // the site did not sign. The channel is the host's, so it has to be installed regardless.
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m09-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><head>
+                    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'">
+                    </head><body><div id="marker">m09-ready</div><script>
+                    window.__m09pageScriptRan = true;
+                </script></body></html>""",
+            )
+            assertThat(
+                nv.evalJsUnquotedAsync("String(window.__m09pageScriptRan)") == "undefined",
+                "the policy did not stop the page's inline script, so the case proves nothing",
+            )
+            assertThat(nv.evalJsUnquotedAsync("typeof window.suiteChan") == "object", "no channel object on the page")
+            nv.evalJsUnquotedAsync("window.suiteChan.postMessage('csp').then(function (r) { window.__m09 = r; }); 'x'")
+            awaitUntil(10_000, "reply") { nv.evalJsUnquotedAsync("String(window.__m09)") == "csp-ok" }
+            val msg = received.single()
+            assertThat(msg.body == "csp" && msg.isMainFrame, "message=$msg")
+        }
+    }
+    case("M10", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val requests = mutableListOf<Pair<AttestedMessage, (String) -> Unit>>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> requests += msg to reply }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m10-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m10-ready</div><script>
+                    window.suiteChan.postMessage('before').then(function (r) { window.__m10before = r; });
+                    window.__m10rewrite = function () {
+                        document.open();
+                        window.suiteChan.postMessage('during').then(function (r) { window.__m10during = r; });
+                        document.write('<html><body><div id="marker">m10-rewritten</div><script>' +
+                            "window.suiteChan.postMessage('after').then(function (r) { window.__m10after = r; });" +
+                            '<\/script></body></html>');
+                        document.close();
+                    };
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "first request") { requests.size == 1 }
+            // document.open() empties the document and drops every event listener on its window, but
+            // it is still the same document in the same window: the reply it waits for still lands,
+            // and what it posts while it is empty and once it is written again is answered.
+            nv.evalJsUnquotedAsync("window.__m10rewrite(); 'x'")
+            val marker = "document.getElementById('marker')?.textContent || ''"
+            softTimeout(10_000) { while (nv.evalJsUnquotedAsync(marker) != "m10-rewritten") delay(40) }
+            assertThat(nv.evalJsUnquotedAsync(marker) == "m10-rewritten", "the page did not rewrite itself: marker=${nv.evalJsUnquotedAsync(marker)}")
+            softTimeout(10_000) { while (requests.size < 3) delay(40) }
+            assertThat(
+                requests.map { it.first.body } == listOf("before", "during", "after"),
+                "requests=${requests.map { it.first }}",
+            )
+            assertThat(requests.all { it.first.isMainFrame && it.first.origin == requests[0].first.origin }, "requests=${requests.map { it.first }}")
+            requests.forEach { (msg, reply) -> reply("reply-" + msg.body) }
+            val replies = "String(window.__m10before) + '/' + String(window.__m10during) + '/' + String(window.__m10after)"
+            softTimeout(10_000) { while (nv.evalJsUnquotedAsync(replies) != "reply-before/reply-during/reply-after") delay(40) }
+            assertThat(
+                nv.evalJsUnquotedAsync(replies) == "reply-before/reply-during/reply-after",
+                "replies=${nv.evalJsUnquotedAsync(replies)}",
+            )
+        }
+    }
+
+    // ── Desktop safety defaults ──────────────────────────────────────
+    case("D01", required = setOf(SuiteCapability.DesktopSafetyDefaults)) {
+        loadHtmlAwaitMarker(ctx.navigator, "d01", pageWithMarker("d01"))
+        // Engines defer getUserMedia for a hidden document, so an occluded window
+        // never reaches the permission decision.
+        val visibility = evalJsUnquoted(ctx.navigator, "document.visibilityState")
+        if (visibility != "visible") {
+            skipCase("document is $visibility (window occluded/backgrounded)")
+        }
+        // Without a camera getUserMedia rejects with NotFoundError before any
+        // permission decision, which says nothing about the permission default.
+        evalJs(
+            ctx.navigator,
+            """(function(){
+                 window.__d01 = 'pending';
+                 var md = navigator.mediaDevices;
+                 if (!md || !md.getUserMedia || !md.enumerateDevices) { window.__d01 = 'skip:mediaDevices unavailable'; return 'x'; }
+                 md.enumerateDevices().then(function (devices) {
+                   var hasCamera = devices.some(function (d) { return d.kind === 'videoinput'; });
+                   if (!hasCamera) { window.__d01 = 'skip:no videoinput device'; return; }
+                   md.getUserMedia({ video: true }).then(
+                     function () { window.__d01 = 'granted'; },
+                     function (e) { window.__d01 = 'rejected:' + (e && e.name); });
+                 }, function (e) { window.__d01 = 'skip:enumerateDevices failed ' + (e && e.name); });
+                 return 'x';
+               })()""",
+        )
+        awaitUntil(10_000, "decision") { evalJsUnquoted(ctx.navigator, "window.__d01 || ''") != "pending" }
+        val result = evalJsUnquoted(ctx.navigator, "window.__d01")
+        if (result.startsWith("skip:")) skipCase(result.removePrefix("skip:"))
+        assertThat(result == "rejected:NotAllowedError", "camera: $result")
+    }
+    case("D02", required = setOf(SuiteCapability.DesktopSafetyDefaults, SuiteCapability.DataUrlNavigation)) {
+        // The interceptor rewrites the popup URL to a data: page, so the case needs no network.
+        ctx.setModifyMap(mapOf("popup-d02.suite.test" to dataHtmlUrl(pageWithMarker("popup-d02"))))
+        try {
+            loadHtmlAwaitMarker(ctx.navigator, "d02", pageWithMarker("d02"))
+            evalJs(ctx.navigator, "window.open('https://popup-d02.suite.test/', '_blank'); 'x'")
+            awaitUntil(10_000, "same-view navigation") { markerOf(ctx.navigator) == "popup-d02" }
+        } finally {
+            ctx.setModifyMap(emptyMap())
+        }
+    }
+    case("D03", required = setOf(SuiteCapability.DesktopSafetyDefaults, SuiteCapability.DataUrlNavigation)) {
+        // Rewritten to a data: page so an honoured popup would visibly replace the top document.
+        ctx.setModifyMap(mapOf("example.invalid/d03" to dataHtmlUrl(pageWithMarker("d03-popped"))))
+        try {
+            // A cross-origin frame calls window.open without a user gesture, then tells the top page
+            // it did, so the case cannot pass because the frame never executed.
+            val frame = "<script>" +
+                "try{window.open('https://example.invalid/d03')}catch(e){}" +
+                "parent.postMessage('d03-opened','*');" +
+                "</script>"
+            loadHtmlAwaitMarker(
+                ctx.navigator,
+                "d03",
+                """<html><body><div id="marker">d03</div><script>
+                    window.addEventListener('message', function (e) { if (e.data === 'd03-opened') { document.__d03 = 'opened'; } });
+                    </script><iframe src="data:text/html,${frame.encodeURLComponentForSuite()}"></iframe></body></html>""",
+            )
+            awaitUntil(10_000, "frame called window.open") { evalJsUnquoted(ctx.navigator, "document.__d03 || ''") == "opened" }
+            delay(2_000)
+            val marker = markerOf(ctx.navigator)
+            assertThat(marker == "d03", "an iframe's window.open navigated the top view: marker=$marker")
+        } finally {
+            ctx.setModifyMap(emptyMap())
+        }
     }
 
     // ── Rendering ────────────────────────────────────────────────────

@@ -37,9 +37,11 @@ struct ComposeWebViewState {
     ComPtr<ICoreWebView2_2> webview2;
     ComPtr<ICoreWebView2CookieManager> cookieManager;
 
+    /* The device of the host window's composition tree, shared by the views in that window, and this
+     * view's own visual in the tree. */
     ComPtr<IDCompositionDevice> dcompDevice;
-    ComPtr<IDCompositionTarget> dcompTarget;
     ComPtr<IDCompositionVisual> rootVisual;
+    bool inWindowTree = false;
 
     int xPx = 0;
     int yPx = 0;
@@ -63,6 +65,13 @@ struct ComposeWebViewState {
     EventRegistrationToken documentTitleChangedToken{};
     EventRegistrationToken cursorChangedToken{};
     EventRegistrationToken webMessageToken{};
+    EventRegistrationToken contentLoadingToken{};
+    EventRegistrationToken permissionRequestedToken{};
+    EventRegistrationToken newWindowRequestedToken{};
+
+    /* Counts top-level documents; a reply addressed to an earlier one is dropped. */
+    std::atomic<jlong> documentGeneration{0};
+    bool channelEnabled = false;
 };
 
 struct ComposeWebViewCreateOptions {
@@ -70,6 +79,7 @@ struct ComposeWebViewCreateOptions {
     std::wstring dataDirectory;
     std::wstring initScript;
     std::wstring jsBridgeScript;
+    std::wstring channelShim;
     bool incognito = false;
     bool enableDevtools = false;
     bool javascriptEnabled = true;
@@ -86,8 +96,10 @@ JNIEnv *compose_webview_get_env(void);
 void compose_webview_ensure_bridge_methods(JNIEnv *env);
 void compose_webview_call_on_js_result(jlong handle, const std::string &utf8);
 void compose_webview_call_on_ipc(jlong handle, const std::string &utf8);
+void compose_webview_call_on_sourced_message(jlong handle, jlong generation, const std::wstring &source, const std::wstring &raw);
 bool compose_webview_call_on_navigate(jlong handle, const std::wstring &url);
 void compose_webview_call_on_cookies(jlong handle, const std::string &json);
+void compose_webview_call_on_cookies_removed(jlong requestId);
 void compose_webview_call_on_screenshot(jlong handle, const std::vector<BYTE> *png);
 
 /* helpers (view_lifecycle.cpp) */
@@ -98,7 +110,7 @@ std::wstring compose_webview_utf8_to_wide(const std::string &u);
 std::string compose_webview_json_escape(const std::string &s);
 
 ComposeWebViewState *compose_webview_state_from_handle(jlong handle);
-void compose_webview_pump_until_done(const std::atomic<bool> &done);
+void compose_webview_pump_until_done(const std::vector<HWND> &before, const std::atomic<bool> &done);
 void compose_webview_apply_bounds(ComposeWebViewState &s);
 void compose_webview_apply_rounded_clip(ComposeWebViewState &s);
 

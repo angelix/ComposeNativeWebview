@@ -2,6 +2,8 @@ package dev.nucleusframework.webview.web.macos
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessageChannel
 import dev.nucleusframework.webview.web.NativeWebView
 import dev.nucleusframework.window.tao.NucleusPlatformView
 import kotlinx.coroutines.CompletableDeferred
@@ -24,6 +26,7 @@ class MacOsWebKitNativeWebView(
     zoomLevel: Double = 1.0,
     transparent: Boolean = false,
     backgroundColor: Color = Color.White,
+    messageChannel: AttestedMessageChannel? = null,
 ) : NativeWebView() {
     private val handle: Long
     private val nsViewHandle: Long
@@ -60,8 +63,13 @@ class MacOsWebKitNativeWebView(
             bgG = g,
             bgB = b,
             bgA = a,
+            channelName = messageChannel?.name,
+            channelShim = messageChannel?.let { AttestedChannelScripts.macosShim(it.name) },
         )
         require(handle != 0L) { "Failed to create WKWebView" }
+        messageChannel?.let { WebKitMacOsBridge.registerChannel(handle, it) }
+        // A view created with a JS bridge script has a bridge to drain its window.ipc messages into.
+        if (!jsBridgeScript.isNullOrBlank()) WebKitMacOsBridge.startIpcQueue(handle)
         nsViewHandle = WebKitMacOsBridge.nativeGetNsView(handle)
         require(nsViewHandle != 0L) { "Failed to get NSView handle" }
     }
@@ -148,6 +156,10 @@ class MacOsWebKitNativeWebView(
     override fun drainIpcMessages(): List<String> =
         if (!isReady()) emptyList() else WebKitMacOsBridge.drainIpcMessages(handle)
 
+    override fun startIpcQueue() {
+        if (isReady()) WebKitMacOsBridge.startIpcQueue(handle)
+    }
+
     override fun addNavigateListener(listener: (String) -> Boolean) {
         if (!isReady()) return
         WebKitMacOsBridge.addNavigateListener(handle, listener)
@@ -192,14 +204,16 @@ class MacOsWebKitNativeWebView(
         )
     }
 
-    fun removeAllCookiesNative() {
+    /** Returns once the engine reports the cookies gone. */
+    suspend fun removeAllCookiesNative() {
         if (!isReady()) return
-        WebKitMacOsBridge.nativeRemoveAllCookies(handle)
+        WebKitMacOsBridge.removeAllCookies(handle)
     }
 
-    fun removeCookiesForUrlNative(url: String) {
+    /** Returns once the engine reports the cookies of [url]'s host gone. */
+    suspend fun removeCookiesForUrlNative(url: String) {
         if (!isReady()) return
-        WebKitMacOsBridge.nativeRemoveCookiesForUrl(handle, url)
+        WebKitMacOsBridge.removeCookiesForUrl(handle, url)
     }
 
     fun setZoomLevel(zoom: Double) {

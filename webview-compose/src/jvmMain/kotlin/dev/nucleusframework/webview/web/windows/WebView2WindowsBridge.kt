@@ -1,9 +1,23 @@
 package dev.nucleusframework.webview.web.windows
 
 import dev.nucleusframework.core.runtime.NativeLibraryLoader
+import dev.nucleusframework.webview.util.KLogger
+import dev.nucleusframework.webview.web.AttestedChannelScripts
+import dev.nucleusframework.webview.web.AttestedMessage
+import dev.nucleusframework.webview.web.AttestedMessageChannel
+import dev.nucleusframework.webview.web.IpcInbox
+import dev.nucleusframework.webview.web.NativeCompletions
+import dev.nucleusframework.webview.web.WindowsChannelSession
+import dev.nucleusframework.webview.web.WindowsMessage
+import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * JNI bridge to `compose_webview.cpp` (WebView2 CompositionController + DComp).
@@ -16,6 +30,8 @@ import kotlinx.coroutines.CompletableDeferred
  */
 internal object WebView2WindowsBridge {
     private const val LIBRARY_NAME = "compose_webview_windows"
+    private const val LOG_TAG = "WebView2WindowsBridge"
+    private const val KEY_BYTES = 16
 
     val isLoaded: Boolean =
         NativeLibraryLoader.load(
@@ -26,14 +42,31 @@ internal object WebView2WindowsBridge {
 
     private val navigateHandlers =
         ConcurrentHashMap<Long, MutableList<(String) -> Boolean>>()
-    private val ipcQueues =
-        ConcurrentHashMap<Long, ConcurrentLinkedQueue<String>>()
+    private val ipcInbox = IpcInbox()
+    private val cookieRemovals = NativeCompletions()
     private val jsCallbacks =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<(String) -> Unit>>()
     private val cookieDeferreds =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<String>>>()
     private val screenshotDeferreds =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<ByteArray?>>>()
+
+    private val channels = ConcurrentHashMap<Long, AttestedMessageChannel>()
+    private val sessions = ConcurrentHashMap<Long, WindowsChannelSession>()
+    private val random = SecureRandom()
+
+    // Replies run native calls, which must happen on the Tao main thread.
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    fun registerChannel(handle: Long, channel: AttestedMessageChannel) {
+        channels[handle] = channel
+        sessions[handle] = WindowsChannelSession(newKey = ::newKey)
+    }
+
+    private fun newKey(): String {
+        val bytes = ByteArray(KEY_BYTES).also(random::nextBytes)
+        return bytes.joinToString("") { ((it.toInt() and 0xFF) + 0x100).toString(16).substring(1) }
+    }
 
     fun addNavigateListener(handle: Long, listener: (String) -> Boolean) {
         navigateHandlers.getOrPut(handle) { mutableListOf() }.add(listener)
@@ -43,15 +76,18 @@ internal object WebView2WindowsBridge {
         navigateHandlers[handle]?.remove(listener)
     }
 
-    fun drainIpcMessages(handle: Long): List<String> {
-        val queue = ipcQueues[handle] ?: return emptyList()
-        val drained = ArrayList<String>()
-        while (true) {
-            val next = queue.poll() ?: break
-            drained += next
-        }
-        return drained
-    }
+    /** Starts keeping the `window.ipc` messages of [handle]; until then they are dropped. */
+    fun startIpcQueue(handle: Long) = ipcInbox.open(handle)
+
+    fun drainIpcMessages(handle: Long): List<String> = ipcInbox.drain(handle)
+
+    /** Removes every cookie and returns once the engine reports them gone. */
+    suspend fun removeAllCookies(handle: Long) =
+        cookieRemovals.await(handle) { requestId -> nativeRemoveAllCookies(handle, requestId) }
+
+    /** Removes the cookies of [url]'s host and returns once the engine reports them gone. */
+    suspend fun removeCookiesForUrl(handle: Long, url: String) =
+        cookieRemovals.await(handle) { requestId -> nativeRemoveCookiesForUrl(handle, url, requestId) }
 
     fun registerJsCallback(handle: Long, callback: (String) -> Unit) {
         jsCallbacks.getOrPut(handle) { ConcurrentLinkedQueue() }.add(callback)
@@ -67,7 +103,10 @@ internal object WebView2WindowsBridge {
 
     fun clearHandle(handle: Long) {
         navigateHandlers.remove(handle)
-        ipcQueues.remove(handle)
+        channels.remove(handle)
+        sessions.remove(handle)
+        ipcInbox.close(handle)
+        cookieRemovals.release(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
         cookieDeferreds.remove(handle)?.forEach {
             it.complete("[]")
@@ -88,7 +127,56 @@ internal object WebView2WindowsBridge {
 
     @JvmStatic
     fun nativeOnIpcMessage(handle: Long, message: String) {
-        ipcQueues.getOrPut(handle) { ConcurrentLinkedQueue() }.add(message)
+        ipcInbox.offer(handle, message)
+    }
+
+    /**
+     * A string message posted over `chrome.webview`, with the URI of the document that posted it
+     * and the top-level document generation it arrived in. Messages that are not the channel's
+     * (the library's own `window.ipc` and JS bridge traffic) go to the IPC queue.
+     *
+     * A hello is answered with a key that only the top-level document receives; a request reaches
+     * the channel only when it returns that key (see [WindowsChannelSession]).
+     */
+    @JvmStatic
+    fun nativeOnSourcedMessage(handle: Long, generation: Long, source: String, raw: String) {
+        val channel = channels[handle]
+        val session = sessions[handle]
+        val message = channel?.let { AttestedChannelScripts.parseWindowsMessage(raw, it.name) }
+        if (channel == null || session == null || message == null) {
+            nativeOnIpcMessage(handle, raw)
+            return
+        }
+        when (message) {
+            WindowsMessage.Malformed -> Unit
+            is WindowsMessage.Hello -> {
+                val key = session.hello(generation, message.document, message.origin, source) ?: return
+                nativeExecuteIfGeneration(
+                    handle,
+                    generation,
+                    AttestedChannelScripts.windowsKeyScript(channel.name, message.document, key),
+                )
+            }
+            is WindowsMessage.Request -> {
+                val origin = session.authenticate(message.document, message.key, source) ?: return
+                // The reply script compares location.origin, which follows the URL even when the
+                // document's own origin is opaque.
+                val urlOrigin = AttestedChannelScripts.originOf(source)
+                val replied = AtomicBoolean(false)
+                try {
+                    channel.onMessage(AttestedMessage(body = message.body, origin = origin, isMainFrame = true)) { payload ->
+                        if (!replied.compareAndSet(false, true)) return@onMessage
+                        val script =
+                            AttestedChannelScripts.windowsReplyScript(channel.name, urlOrigin, message.document, message.id, payload)
+                        mainScope.launch {
+                            if (channels.containsKey(handle)) nativeExecuteIfGeneration(handle, generation, script)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    KLogger.e(t, tag = LOG_TAG) { "channel \"${channel.name}\" onMessage threw" }
+                }
+            }
+        }
     }
 
     @JvmStatic
@@ -99,6 +187,12 @@ internal object WebView2WindowsBridge {
     @JvmStatic
     fun nativeOnCookiesResult(handle: Long, json: String) {
         cookieDeferreds[handle]?.poll()?.complete(json)
+    }
+
+    /** The removal started with [requestId] has finished (or could not be started). */
+    @JvmStatic
+    fun nativeOnCookiesRemoved(requestId: Long) {
+        cookieRemovals.complete(requestId)
     }
 
     @JvmStatic
@@ -124,10 +218,14 @@ internal object WebView2WindowsBridge {
         bgG: Float,
         bgB: Float,
         bgA: Float,
+        channelShim: String?,
     ): Long
 
     @JvmStatic
     external fun nativeRelease(handle: Long)
+
+    @JvmStatic
+    external fun nativeExecuteIfGeneration(handle: Long, generation: Long, script: String)
 
     @JvmStatic
     external fun nativeLoadUrl(handle: Long, url: String)
@@ -202,10 +300,10 @@ internal object WebView2WindowsBridge {
     )
 
     @JvmStatic
-    external fun nativeRemoveAllCookies(handle: Long)
+    external fun nativeRemoveAllCookies(handle: Long, requestId: Long)
 
     @JvmStatic
-    external fun nativeRemoveCookiesForUrl(handle: Long, url: String)
+    external fun nativeRemoveCookiesForUrl(handle: Long, url: String, requestId: Long)
 
     @JvmStatic
     external fun nativeCaptureScreenshot(handle: Long)

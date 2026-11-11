@@ -4,6 +4,38 @@
 
 using Microsoft::WRL::Callback;
 
+/* The longest a removal is waited on: for cookies a page sets back as fast as they are deleted. */
+static const ULONGLONG kCookieRemovalLimitMs = 2000;
+
+/*
+ * Deletes the cookies [url] gets and reports [requestId] once a read finds none left. A deletion is
+ * not in the jar yet when the call that asks for it returns, and nothing says when it is, so a read
+ * that comes right behind it can still find the cookie.
+ */
+static void removeCookiesUntilGone(
+    ComPtr<ICoreWebView2CookieManager> cm, std::wstring url, jlong requestId, ULONGLONG deadline) {
+    HRESULT started = cm->GetCookies(
+        url.c_str(),
+        Callback<ICoreWebView2GetCookiesCompletedHandler>(
+            [cm, url, requestId, deadline](HRESULT result, ICoreWebView2CookieList *list) -> HRESULT {
+                UINT count = 0;
+                if (SUCCEEDED(result) && list) list->get_Count(&count);
+                if (count == 0 || GetTickCount64() >= deadline) {
+                    compose_webview_call_on_cookies_removed(requestId);
+                    return S_OK;
+                }
+                for (UINT i = 0; i < count; i++) {
+                    ComPtr<ICoreWebView2Cookie> cookie;
+                    if (SUCCEEDED(list->GetValueAtIndex(i, &cookie)) && cookie) {
+                        cm->DeleteCookie(cookie.Get());
+                    }
+                }
+                removeCookiesUntilGone(cm, url, requestId, deadline);
+                return S_OK;
+            }).Get());
+    if (FAILED(started)) compose_webview_call_on_cookies_removed(requestId);
+}
+
 extern "C" {
 
 JNIEXPORT void JNICALL
@@ -133,35 +165,26 @@ Java_dev_nucleusframework_webview_web_windows_WebView2WindowsBridge_nativeSetCoo
 
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_webview_web_windows_WebView2WindowsBridge_nativeRemoveAllCookies(
-    JNIEnv *, jclass, jlong handle) {
+    JNIEnv *, jclass, jlong handle, jlong requestId) {
     ComposeWebViewState *s = compose_webview_state_from_handle(handle);
     if (s && s->cookieManager) {
         s->cookieManager->DeleteAllCookies();
     }
+    /* The cookie manager applies its calls in order, so a later read sees the jar empty. */
+    compose_webview_call_on_cookies_removed(requestId);
 }
 
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_webview_web_windows_WebView2WindowsBridge_nativeRemoveCookiesForUrl(
-    JNIEnv *env, jclass, jlong handle, jstring url) {
+    JNIEnv *env, jclass, jlong handle, jstring url, jlong requestId) {
     ComposeWebViewState *s = compose_webview_state_from_handle(handle);
-    if (!s || !s->cookieManager || !url) return;
-    std::wstring wurl = compose_webview_jstring_to_wide(env, url);
-    ComPtr<ICoreWebView2CookieManager> cm = s->cookieManager;
-    cm->GetCookies(
-        wurl.c_str(),
-        Callback<ICoreWebView2GetCookiesCompletedHandler>(
-            [cm](HRESULT result, ICoreWebView2CookieList *list) -> HRESULT {
-                if (FAILED(result) || !list) return S_OK;
-                UINT count = 0;
-                list->get_Count(&count);
-                for (UINT i = 0; i < count; i++) {
-                    ComPtr<ICoreWebView2Cookie> cookie;
-                    if (SUCCEEDED(list->GetValueAtIndex(i, &cookie)) && cookie) {
-                        cm->DeleteCookie(cookie.Get());
-                    }
-                }
-                return S_OK;
-            }).Get());
+    if (!s || !s->cookieManager || !url) {
+        compose_webview_call_on_cookies_removed(requestId);
+        return;
+    }
+    removeCookiesUntilGone(
+        s->cookieManager, compose_webview_jstring_to_wide(env, url), requestId,
+        GetTickCount64() + kCookieRemovalLimitMs);
 }
 
 }  /* extern "C" */
