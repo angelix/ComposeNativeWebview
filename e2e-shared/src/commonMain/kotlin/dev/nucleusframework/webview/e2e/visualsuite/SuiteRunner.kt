@@ -1081,6 +1081,48 @@ internal suspend fun runFullSuite(
             assertThat(msg.body == "csp" && msg.isMainFrame, "message=$msg")
         }
     }
+    case("M10", required = setOf(SuiteCapability.AttestedMessageChannel)) {
+        val requests = mutableListOf<Pair<AttestedMessage, (String) -> Unit>>()
+        val channel = AttestedMessageChannel("suiteChan") { msg, reply -> requests += msg to reply }
+        withIsolatedNativeWebView(parentHandle = ctx.parentHandle, messageChannel = channel) { nv ->
+            nv.loadHtmlAwaitMarker(
+                expectedMarker = "m10-ready",
+                baseUri = "https://main.suite.test/",
+                html = """<html><body><div id="marker">m10-ready</div><script>
+                    window.suiteChan.postMessage('before').then(function (r) { window.__m10before = r; });
+                    window.__m10rewrite = function () {
+                        document.open();
+                        window.suiteChan.postMessage('during').then(function (r) { window.__m10during = r; });
+                        document.write('<html><body><div id="marker">m10-rewritten</div><script>' +
+                            "window.suiteChan.postMessage('after').then(function (r) { window.__m10after = r; });" +
+                            '<\/script></body></html>');
+                        document.close();
+                    };
+                </script></body></html>""",
+            )
+            awaitUntil(10_000, "first request") { requests.size == 1 }
+            // document.open() empties the document and drops every event listener on its window, but
+            // it is still the same document in the same window: the reply it waits for still lands,
+            // and what it posts while it is empty and once it is written again is answered.
+            nv.evalJsUnquotedAsync("window.__m10rewrite(); 'x'")
+            val marker = "document.getElementById('marker')?.textContent || ''"
+            softTimeout(10_000) { while (nv.evalJsUnquotedAsync(marker) != "m10-rewritten") delay(40) }
+            assertThat(nv.evalJsUnquotedAsync(marker) == "m10-rewritten", "the page did not rewrite itself: marker=${nv.evalJsUnquotedAsync(marker)}")
+            softTimeout(10_000) { while (requests.size < 3) delay(40) }
+            assertThat(
+                requests.map { it.first.body } == listOf("before", "during", "after"),
+                "requests=${requests.map { it.first }}",
+            )
+            assertThat(requests.all { it.first.isMainFrame && it.first.origin == requests[0].first.origin }, "requests=${requests.map { it.first }}")
+            requests.forEach { (msg, reply) -> reply("reply-" + msg.body) }
+            val replies = "String(window.__m10before) + '/' + String(window.__m10during) + '/' + String(window.__m10after)"
+            softTimeout(10_000) { while (nv.evalJsUnquotedAsync(replies) != "reply-before/reply-during/reply-after") delay(40) }
+            assertThat(
+                nv.evalJsUnquotedAsync(replies) == "reply-before/reply-during/reply-after",
+                "replies=${nv.evalJsUnquotedAsync(replies)}",
+            )
+        }
+    }
 
     // ── Desktop safety defaults ──────────────────────────────────────
     case("D01", required = setOf(SuiteCapability.DesktopSafetyDefaults)) {
